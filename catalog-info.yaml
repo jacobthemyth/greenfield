@@ -5,7 +5,7 @@ metadata:
   description: "Claude Code plugin that reverse-engineers clean behavioral specs, test vectors, and acceptance criteria from any codebase with a provenance trail."
   annotations:
     backstage.io/techdocs-ref: dir:.
-    prime-radiant.com/repo-map-rev: "ab79e46cc42b5ec13e413b6c1940479321aac260"
+    prime-radiant.com/repo-map-rev: "98a6a3e50b9c8be52ed75f2da46fff9e45c6b631"
   tags: [claude-code-plugin, reverse-engineering]
 spec:
   type: tool
