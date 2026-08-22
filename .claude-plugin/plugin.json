@@ -32,6 +32,10 @@
     "./skills/test-suite-analysis",
     "./skills/visual-exploration",
     "./skills/contract-detection",
-    "./skills/incremental-analysis"
+    "./skills/incremental-analysis",
+    "./skills/macos-bundle-analysis",
+    "./skills/macos-runtime-observation",
+    "./skills/macos-visual-exploration",
+    "./skills/app-data-inspection"
   ]
 }

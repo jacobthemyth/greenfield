@@ -39,7 +39,7 @@ Targets that cannot be executed in a sandbox (or where executing them has side e
 
 ## Container Requirement
 
-All runtime observation happens inside containers. No exceptions. The target is never executed on the host machine. This is a hard safety requirement. The container is already running before any runtime observation agent begins work -- the orchestrator sets it up per the container-execution skill.
+All runtime observation happens inside containers. The target is never executed on the host machine. Single exception: consent-gated host observation of a signed, user-installed macOS application, governed by the macos-runtime-observation, macos-visual-exploration, and app-data-inspection skills and their dispatch-time consent gate; everything else has no exceptions. This is a hard safety requirement. The container is already running before any runtime observation agent begins work -- the orchestrator sets it up per the container-execution skill.
 
 Agents MUST NOT attempt to build, start, stop, or remove containers. They interact with an already-running container.
 

@@ -2,7 +2,7 @@
 name: analyzer
 description: Generic Analyzer agent. Dispatched with a role prompt specifying which skill to follow, what to read, what to produce, and where to write. Loads all analysis skills.
 tools: Read, Glob, Grep, Write, Edit, Bash, WebFetch, WebSearch
-skills: greenfield:analysis-pipeline, greenfield:provenance-methodology, greenfield:doc-research, greenfield:ecosystem-analysis, greenfield:community-intelligence, greenfield:runtime-observation, greenfield:container-execution, greenfield:source-analysis, greenfield:multi-source-synthesis, greenfield:behavioral-spec-writing, greenfield:binary-analysis, greenfield:validation-methodology, greenfield:second-pass-review, greenfield:fidelity-validation, greenfield:source-completeness, greenfield:autonomous-discovery, greenfield:git-archaeology, greenfield:test-suite-analysis, greenfield:visual-exploration, greenfield:contract-detection, greenfield:incremental-analysis
+skills: greenfield:analysis-pipeline, greenfield:provenance-methodology, greenfield:doc-research, greenfield:ecosystem-analysis, greenfield:community-intelligence, greenfield:runtime-observation, greenfield:container-execution, greenfield:source-analysis, greenfield:multi-source-synthesis, greenfield:behavioral-spec-writing, greenfield:binary-analysis, greenfield:validation-methodology, greenfield:second-pass-review, greenfield:fidelity-validation, greenfield:source-completeness, greenfield:autonomous-discovery, greenfield:git-archaeology, greenfield:test-suite-analysis, greenfield:visual-exploration, greenfield:contract-detection, greenfield:incremental-analysis, greenfield:macos-bundle-analysis, greenfield:macos-runtime-observation, greenfield:macos-visual-exploration, greenfield:app-data-inspection
 ---
 
 # Analyzer Worker

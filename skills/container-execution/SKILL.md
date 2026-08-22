@@ -5,7 +5,7 @@ description: Infrastructure skill for containerized target execution. Runtime de
 
 # Container Execution
 
-All runtime analysis targets run inside containers. Never execute untrusted code on the host.
+All runtime analysis targets run inside containers. Never execute untrusted code on the host. Single exception: consent-gated host observation of a signed, user-installed macOS application, governed by the macos-runtime-observation, macos-visual-exploration, and app-data-inspection skills and their dispatch-time consent gate.
 
 ## Runtime Detection
 
