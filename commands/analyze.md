@@ -17,6 +17,18 @@ arguments:
     required: false
     default: auto-detect (docker, then podman)
     values: [docker, podman]
+  - name: --macos-env
+    description: >
+      Pre-select the macOS runtime environment, skipping the Runtime Environment Gate's
+      environment question (host-direct still asks its disposable-account confirmation).
+      A vm-* value on an x86_64 host is rejected at the gate, not at parse time.
+    required: false
+    default: (ask at the Runtime Environment Gate)
+    values: [vm-tart, vm-lume, host-direct, none]
+  - name: --keep-vm
+    description: Skip deletion of the working VM at cleanup (for debugging); prints the reclaim command in the summary.
+    required: false
+    default: (delete the working VM)
   - name: --workspace
     description: Path to the workspace directory. Created if it does not exist.
     required: false
@@ -64,9 +76,10 @@ Agents MUST use the Read tool on every source file. Head/tail samples are not en
 /analyze path                              # Discover and consume everything available
 /analyze path --exclude source             # Black-box analysis (skip source code)
 /analyze path --exclude git-history,tests  # Skip git mining and test suite analysis
-/analyze /Applications/Foo.app             # Native macOS app (static + consent-gated host observation)
+/analyze /Applications/Foo.app             # Native macOS app (static host analysis + chosen runtime environment)
 /analyze https://example.com/product       # URL target (discovery resolves to installed app, if any)
-/analyze path --exclude macos-runtime,app-data  # Static-only macOS analysis (skips the consent gate entirely)
+/analyze /Applications/Foo.app --macos-env vm-tart  # Pre-select a Tart VM runtime environment (skips the gate's environment question)
+/analyze path --exclude macos-runtime,app-data  # Static-only macOS analysis (skips the runtime environment gate entirely)
 ```
 
 ## EXIT CODES
@@ -74,7 +87,7 @@ Agents MUST use the Read tool on every source file. Head/tail samples are not en
 | Code | Meaning |
 |------|---------|
 | 0 | Success. Analysis completed, all gates passed. |
-| 1 | Failure. Gate failure, workspace conflict, container unavailable, etc. |
+| 1 | Failure. Gate failure, workspace conflict, container unavailable, runtime environment unavailable, etc. |
 | 2 | Invalid arguments. Bad mode name, missing path, etc. |
 
 ## OUTPUT STRUCTURE
@@ -117,12 +130,15 @@ workspace/
 │   │
 │   ├── macos/               # Native macOS app analysis artifacts
 │   │   ├── bundle/          # Static bundle analysis: Info.plist, entitlements, sdef, strings catalogs
-│   │   ├── runtime/         # Consent-gated host observation: OBS records, scripting dumps, screenshots + AX sidecars
+│   │   ├── runtime/         # Runtime environment observation: OBS records, scripting dumps, screenshots + AX sidecars
 │   │   │   ├── observations/
 │   │   │   ├── scripting/
 │   │   │   ├── screenshots/
-│   │   │   └── flows/       # Interaction flow captures: step-NN screenshots + AX sidecars + flow.md
-│   │   └── app-data/        # Consent-gated read-only data stores: schema, defaults, DBQ records
+│   │   │   ├── flows/       # Interaction flow captures: step-NN screenshots + AX sidecars + flow.md
+│   │   │   └── mutations/   # Write/mutation probe captures
+│   │   └── app-data/        # Runtime environment data stores: schema, baseline, defaults, DBQ records
+│   │       ├── baseline/    # Pre-mutation data-store baseline
+│   │       └── mutation-diffs/  # Data-store diffs after mutation probes
 │   │
 │   ├── project-history/     # Git archaeology findings
 │   │
@@ -146,7 +162,7 @@ workspace/
 │   │
 │   └── audit/               # Detailed per-finding audit reports from Layers 6 and 7
 │
-├── consent/                 # Host-observation consent artifact
+├── environment/             # Runtime environment artifact
 │
 ├── output/                   # Sanitized specs for the implementer
 │   ├── specs/
@@ -226,6 +242,12 @@ esac
 # Valid values: docker, podman
 # Only relevant when runtime observation is active
 
+# Validate --macos-env (if provided)
+# Valid values: vm-tart, vm-lume, host-direct, none
+# Reject any other value immediately with exit code 2.
+# NOTE: a vm-* value on an x86_64 host is NOT rejected here — the arch probe lives at the
+# Runtime Environment Gate, which rejects vm-* on x86_64 there, not at parse time.
+
 # Validate --workspace
 # If workspace exists and contains .git, proceed with incremental analysis
 # If workspace does not exist, create fresh
@@ -252,6 +274,13 @@ cd "$WORKSPACE"
 # Skip all completed steps
 # Resume from the first incomplete step
 
+# Runtime-environment resume: before dispatching any macos-runtime or app-data agent,
+# read workspace.json.runtime_environment. If its environment is vm-tart or vm-lume,
+# verify the working VM still exists and runs (`tart list`). If the VM is gone,
+# re-provision it from the recorded base_image per the macos-vm-execution skill;
+# otherwise (no recorded environment, or a stale/none record) re-run the Runtime
+# Environment Gate before dispatching any macos-runtime/app-data agent.
+
 # Log: "Resuming from Layer {N}, after {last-agent-name}"
 ```
 
@@ -273,7 +302,7 @@ mkdir -p raw/runtime/cli raw/runtime/web raw/runtime/behaviors raw/runtime/ux-fl
 mkdir -p raw/runtime/visual/screenshots raw/runtime/visual/flows
 mkdir -p raw/binary/survey raw/binary/analysis
 mkdir -p raw/project-history
-mkdir -p raw/macos/bundle raw/macos/runtime/observations raw/macos/runtime/scripting raw/macos/runtime/screenshots raw/macos/runtime/flows raw/macos/app-data consent
+mkdir -p raw/macos/bundle raw/macos/runtime/observations raw/macos/runtime/scripting raw/macos/runtime/screenshots raw/macos/runtime/flows raw/macos/runtime/mutations raw/macos/app-data raw/macos/app-data/baseline raw/macos/app-data/mutation-diffs environment
 mkdir -p raw/test-evidence
 mkdir -p raw/synthesis/features raw/synthesis/architecture raw/synthesis/api
 mkdir -p raw/specs/modules raw/specs/journeys raw/specs/contracts raw/specs/protocols raw/specs/ui raw/specs/tests raw/specs/test-vectors raw/specs/validation
@@ -285,7 +314,8 @@ find . -type d -empty -not -path './.git/*' -exec touch {}/.gitkeep \;
 
 # Write workspace.json with initial values
 # (version, target, target_kind: path|url, resolved_app_path: <path>|null,
-#  host_observation_consent: {scopes_granted, scopes_declined, decided_at}|null,
+#  runtime_environment: { environment, vm_name, base_image, ssh_target, host_account,
+#    signature_verdict, affirmed_disposable_account, acquisition, decided_at }|null,
 #  excluded_types, created_at, updated_at, current_layer: 1, gates_passed: [], agent_runs: [])
 
 # Write .gitignore (container build artifacts, large binaries, temp files, OS/editor artifacts, node_modules)
@@ -343,9 +373,13 @@ Pre-flight dispatch count (Layers 1–4, before sanitization decision point):
         contracts    1 agent
         macos-bundle 1 agent (bundle-inspector)
         macos-runtime 2 agents (applescript-explorer, ui-observer) —
-                     pending host-observation consent gate
+                     pending the Runtime Environment Gate
         app-data     1 agent (data-inspector) — pending
-                     host-observation consent gate
+                     the Runtime Environment Gate
+                     NOTE: a VM environment (vm-tart/vm-lume) adds a one-time
+                     provisioning step — a first-use image pull of tens of
+                     minutes and tens of GB — that is NOT an agent dispatch and
+                     is not counted here.
   Layer 2 (Synthesis):       5 agents
   Layer 3 (Deep docs):       1 deep-dive per module (module count known
                              after Layer 2) + 3 cross-cutting roles
@@ -419,9 +453,9 @@ Session capture is best-effort. If the JSONL file cannot be found, log a warning
 
 ## Layer 1: Intelligence Gathering
 
-Dispatch agents for each approved source type from the negotiated inventory. Sources are independent — dispatch all approved sources in parallel where possible. Exceptions: `macos-bundle` must complete before the Host Observation Consent Gate (the gate reads its signature verdict); `macos-runtime` and `app-data` run only after that gate grants their scopes, and the two `macos-runtime` agents run sequentially, never in a parallel batch with any other agent that drives the host UI.
+Dispatch agents for each approved source type from the negotiated inventory. Sources are independent — dispatch all approved sources in parallel where possible. Exceptions: `macos-bundle` must complete before the Runtime Environment Gate (the gate reads its signature verdict); `macos-runtime` and `app-data` run only after that gate records an environment other than `none`, and the two `macos-runtime` agents run sequentially (a single Aqua session per environment, not the user's host), never in a parallel batch with any other agent that drives the UI.
 
-Read `workspace/inventory.md` to determine which source types are approved. For each approved source type, dispatch the corresponding agent(s) below. Skip any source type marked as excluded or unavailable (consent-declined types are marked excluded by the consent gate and are skipped identically).
+Read `workspace/inventory.md` to determine which source types are approved. For each approved source type, dispatch the corresponding agent(s) below. Skip any source type marked as excluded or unavailable (types the gate marked excluded are marked excluded in the inventory and are skipped identically).
 
 ### Source: source (Source Code Analysis)
 
@@ -542,7 +576,7 @@ Dispatch `greenfield:analyzer`:
 
 ### Source: macos-bundle (Static Bundle Analysis)
 
-No consent required — static, read-only, the app is never launched.
+No runtime environment required — static, read-only, the app is never launched. **This source always runs on the host** and reads only vendor-shipped bundle contents. When the runtime environment later runs a DIFFERENT binary than the host build (vendor-download acquisition, or a detected version/signing mismatch), the `macos-vm-execution` skill triggers an in-environment re-run of macos-bundle + binary-analysis against the executed artifact and records the host-vs-environment diff at `workspace/raw/macos/bundle/environment-diff.md`.
 
 Dispatch `greenfield:analyzer`:
 - Prompt: "Role: bundle-inspector. Follow the **macos-bundle-analysis skill**. Target bundle: `<app-path>`. Workspace: `<workspace-path>`. Statically analyze the application bundle without launching it: Info.plist contracts (bundle identifier, version, URL schemes, document types, UTIs, services), code signature and entitlements, the AppleScript dictionary (sdef) with every command classified READ or MUTATING, localized strings catalogs, embedded frameworks/extensions/XPC services. Read-only — never launch or modify the app. Write raw findings to `workspace/raw/macos/bundle/` and contract summaries to `workspace/public/contracts/macos-plist-contracts.md`, `macos-sdef.md`, `macos-entitlements.md`. Every claim carries a provenance citation (source=machine-readable-contract for plist/sdef/entitlement declarations; source=bundle-analysis for strings/resource inventories)."
@@ -550,107 +584,76 @@ Dispatch `greenfield:analyzer`:
 
 Note: the bundle's main executable (`Contents/MacOS/<exe>`) is covered by the existing `binary` source type via `workspace/raw/macos/bundle/binary-handoff.md`.
 
-### Host Observation Consent Gate (macos-runtime, app-data)
+### Runtime Environment Gate (macos-runtime, app-data)
 
-This gate runs in the ORCHESTRATOR — subagents cannot AskUserQuestion. It fires only if the negotiated inventory approved `macos-runtime` and/or `app-data`. If both were excluded (e.g. `--exclude macos-runtime,app-data`, or the user excluded them during inventory negotiation), skip this gate entirely — no consent question, no preflight.
+This gate runs in the ORCHESTRATOR — subagents cannot AskUserQuestion. It fires only if the negotiated inventory approved `macos-runtime` and/or `app-data`. If both were excluded (e.g. `--exclude macos-runtime,app-data`, or the user excluded them during inventory negotiation), skip this gate entirely — no environment question, no preflight.
 
-**Step 1: Signature check.** Read the verdict from `workspace/raw/macos/bundle/signing.md`. If the verdict is FAIL or the app is unsigned: refuse host observation outright, mark both `macos-runtime` and `app-data` as `excluded (unsigned target)` in `workspace/inventory.md`, and skip to the Layer 1 Gate Check. If `signing.md` does not exist (e.g. `--exclude macos-bundle` was passed, or the bundle-inspector produced no output), treat it exactly as FAIL: refuse host observation, mark the gated types `excluded (no signature verdict)`, and skip to the Layer 1 Gate Check — a signature verdict is a hard precondition and is never re-derived at the gate.
+**Step 1: Environment availability.** Read discovery's `## macOS Runtime Environments` table from `workspace/inventory.md`, then re-probe cheaply per the **macos-vm-execution skill** Host Requirements & Availability Detection: architecture (`uname -m`), `tart`/`lume` presence (and the Lume API daemon), disk headroom, and the running-guest count against the 2-guest ceiling. Build the option list from what is actually available. A backend that is unavailable (x86_64 host — which is where a `--macos-env vm-*` pre-selection is rejected — an absent binary, the 2-guest ceiling hit, or low disk) is shown in the option list WITH its reason, never silently dropped.
 
-**Step 2: Ask for consent.** Use the **AskUserQuestion** tool, disclosing:
-- The app at `<app-path>` will be launched and driven on this Mac (AppleScript/JXA queries + accessibility-driven UI navigation) — the only exception to the containers-only rule.
-- Signature status (from `workspace/raw/macos/bundle/signing.md`).
-- Read-only guarantees: scripting is limited to query/get verbs; UI driving is navigation and inspection only — destructive or data-mutating actions are never activated; SQLite is opened only read-only; nothing is written into the app's containers.
-- Permissions that may be requested: Automation, Accessibility, Screen Recording — granted to the terminal app in System Settings; they cannot be granted from the CLI.
-- app-data reads `~/Library/Group Containers/...` personal data — schema and minimal illustrative values may appear in workspace artifacts.
-- Even under Drive-only scopes, workspace artifacts will contain the user's real content — scripting property dumps include actual item titles/names, and screenshots capture whatever real data is on screen. These artifacts stay in the analysis workspace and are subject to Layer 5 sanitization before any output specs.
+**Step 2: Signature verdict.** Read the verdict from `workspace/raw/macos/bundle/signing.md`, or treat it as `none` if the file does not exist (e.g. `--exclude macos-bundle` was passed, or the bundle-inspector produced no output). Carry the verdict (or `none`) into the environment artifact. FAIL/missing handling differs by environment — see Steps 3 and 4.
 
-Options: **Full** (drive + data) / **Drive only** / **Data only** / **None (static-only)**.
+**Step 3: Ask.** Use the **AskUserQuestion** tool. Options: **Tart VM** / **Lume VM** / **Host (this Mac, read+write)** / **None (static only)** — unavailable backends carry the reason from Step 1. Disclose:
+- The app at `<app-path>` is installed and driven with full READ+WRITE in the chosen environment.
+- VM options are disposable (~25–50 GB plus a first-run image pull) and destroyed after the run.
+- The app may need a trial sign-in performed by the user inside the VM (over VNC); credentials never enter the workspace.
+- Workspace artifacts will contain whatever data the analysis creates in that environment; these stay in the analysis workspace and are subject to Layer 5 sanitization before any output specs.
+- `none` = static-only: the pipeline continues with host-side static analysis alone.
 
-**Step 3: Record the decision.** Map the choice to scopes:
-- Full → app-launch, scripting-read, visual, app-data-read
-- Drive only → app-launch, scripting-read, visual
-- Data only → app-data-read
-- None → none
+If `--macos-env` was passed and that environment is available, skip this question and record the flag as the decision source — EXCEPT `host-direct`, which ALWAYS asks Step 4.
 
-Write `workspace/consent/macos-host-observation.md`:
+**Signature policy.** For `vm-tart`/`vm-lume`, a FAIL or missing signature verdict is recorded and the run PROCEEDS — a bad signature in a disposable VM costs a VM, nothing more. For `host-direct`, a FAIL or missing verdict is a HARD REFUSAL: mark `macos-runtime` and `app-data` as `excluded (unsigned target under host-direct)` in `workspace/inventory.md` and skip to the Layer 1 Gate Check.
 
-```markdown
-# Host Observation Consent
-- **Target:** <app name>
-- **Bundle ID:** <bundle-id>
-- **Signature check:** passed (see workspace/raw/macos/bundle/signing.md)
-- **Granted scopes:** <comma-separated scopes>
-- **Optional tools approved:** none
-- **Granted:** <ISO timestamp> by user
-```
+**Step 4: Host-direct confirmation (host-direct only).** A SECOND AskUserQuestion, carrying VERBATIM the loud warning from the macos-vm-execution skill's host-direct section, the manual `sudo sysadminctl -addUser … / -deleteUser … -secure` advice, and the explicit statement that **the plugin performs no account automation and no detection heuristics** — the user's affirmation is the only signal this mode is safe. Options: **I affirm this is a disposable account — proceed** / **Choose a different environment** / **Cancel (static only)**. Only the affirmative writes the `**Disposable-account affirmation:**` line into the environment artifact; **Choose a different environment** returns to Step 3; **Cancel** proceeds with `none`.
 
-Record the decision in workspace.json `host_observation_consent`. Declined scopes are recorded in `workspace/inventory.md` as `excluded (consent declined)` — mechanically identical to `--exclude`.
+**Step 5: Provision.** For `vm-tart`/`vm-lume`, provision per the macos-vm-execution skill: pull the base image if absent, clone (APFS CoW), boot headless + VNC on loopback, wait for the guest IP and SSH, provision TCC grants, and acquire the target (copy the host bundle, or vendor-download inside the guest). When the executed binary differs from the host build (Path B, or a version/signing mismatch), trigger the in-environment `macos-bundle` + `binary-analysis` re-run and record `workspace/raw/macos/bundle/environment-diff.md`. For `host-direct`, there is nothing to provision. Provisioning failure → retry once; if it still fails, re-ask Step 3 with that backend marked unavailable. If narrowing ends at `none`, fall through to Step 7 with `none`.
 
-Commit: `[L1:consent] Host observation consent: <scopes>`
+**Step 6: Record.** Write `workspace/environment/runtime-environment.md` in the macos-vm-execution skill's exact format (the bold labels are a contract — do not rename them). Export the runtime variables `GF_ENV`, `GF_VM`, `GF_SSH`, `GF_GUEST_WORKSPACE` for every subsequent runtime dispatch. Update `workspace.json.runtime_environment`. Annotate the inventory: types the gate excluded are marked `excluded (environment: none)` — mechanically identical to `--exclude`.
 
-**Step 4: Preflight doctor.** Runs AFTER consent — the probes themselves trigger TCC prompts. Inline bash probing each granted capability:
+Commit: `[L1:env] Runtime environment: <environment>`
 
-```bash
-# Record whether the app is already running BEFORE the Automation probe —
-# the `get name` probe launches the app if it isn't. If the probe launches it,
-# record launched_by_pipeline: true in the capability matrix so the runtime
-# agents' cleanup quits it.
-pgrep -x "$APP_PROCESS_NAME"
+**Step 7: Preflight doctor.** Runs AFTER the environment is recorded and provisioned — the probes themselves trigger/verify TCC in the chosen environment. Run EACH probe THROUGH `gf_exec`/`gf_gui` in the chosen environment (never on the host), per the macos-vm-execution skill's execution convention:
 
-# Automation: error -1743 = denied, -1728 = app in another login session
-osascript -e "tell application id \"$BUNDLE_ID\" to get name"
+- **app-present** (`gf_exec`): the target is installed in the environment.
+- **GUI-session attachment**: compare `gf_exec 'osascript -e "tell app \"System Events\" to count processes"'` against `gf_gui` of the same command. A `gf_exec` result that is empty or wrong while `gf_gui` answers confirms the Aqua session is reachable only through `gf_gui` (a bare SSH `osascript` returns an empty tree and exits 0 — the skill's dominant failure mode).
+- **Automation** (`gf_gui` osascript): `tell application id "<bundle-id>" to get name` — error `-1743` = denied, `-1728` = app in another session.
+- **Accessibility** (`gf_gui`): `tell application "System Events" to return UI elements enabled`.
+- **Screen Recording** (`gf_gui`, two-shot silent-failure): `screencapture` with the app frontmost, then hidden; near-identical file sizes = wallpaper-only silent failure. DROP the "restore previously frontmost app" dance for VMs (the guest has no user session to disturb); KEEP it for `host-direct`.
+- **Data-store readability** (`gf_exec`): `ls` the group container and open the store read-only with `sqlite3 "file:$DB?mode=ro" ".tables"`. This is a one-shot readability check; it stays `mode=ro` (like every store read in `app-data-inspection`) so it cannot perturb the live WAL that the `data-inspector` agent is about to measure. State changes still go through the app's surfaces, never a direct store write.
 
-# Accessibility
-osascript -e 'tell application "System Events" to return UI elements enabled'
+Produce a capability matrix (granted | missing per capability) and append it as `## Runtime Environment Preflight` to `workspace/inventory.md`.
 
-# Screen Recording: activate app → capture → hide app → capture again;
-# near-identical file sizes = silent wallpaper-only failure
-# Capture the name of the previously frontmost app first so it can be restored.
-PREV_FRONT=$(osascript -e 'tell application "System Events" to get name of first process whose frontmost is true')
-screencapture -x "$SCRATCH/probe-1.png"   # with app frontmost
-screencapture -x "$SCRATCH/probe-2.png"   # with app hidden
-# Restore visibility and focus after the comparison probe
-osascript -e "tell application \"System Events\" to set visible of process \"$APP_PROCESS_NAME\" to true"
-osascript -e "tell application \"$PREV_FRONT\" to activate"
-
-# app-data readability
-ls "$HOME/Library/Group Containers/<group-id>/"
-sqlite3 "file:<db-path>?mode=ro" "PRAGMA schema_version;"
-```
-
-Produce a capability matrix (granted | missing per capability) and append it as `## Host Observation Preflight` to `workspace/inventory.md`.
-
-For each missing capability, AskUserQuestion with options: `[I granted it in System Settings — re-check]` / `[Skip this capability]` / `[Cancel host observation]`. Maximum 3 re-check rounds, then auto-degrade. Degradation matrix:
+For each missing capability, AskUserQuestion with options: `[Re-run TCC provisioning]` / `[I granted it over VNC — re-check]` / `[Skip this capability]` / `[Cancel and fall back to static-only]`. Maximum 3 re-check rounds, then auto-degrade. Degradation matrix:
 - No Automation → drop applescript-explorer
 - No Accessibility → ui-observer degrades to screenshots-only (no menu traversal or AX sidecars, per macos-visual-exploration's degradation modes); drop ui-observer entirely only when BOTH Accessibility and Screen Recording are missing
 - No Screen Recording → ui-observer runs AX-only (no screenshots)
-- Container access denied → data-inspector proceeds defaults-only if the preference domain is readable, else exclude app-data
+- No data access → data-inspector proceeds defaults-only if the preference domain is readable, else exclude app-data
+- VM unreachable mid-run → exclude BOTH `macos-runtime` and `app-data`
 
-Commit: `[L1:preflight] Host observation preflight doctor`
+Commit: `[L1:preflight] Runtime environment preflight doctor`
 
-### Source: macos-runtime (Consent-Gated Host Observation)
+### Source: macos-runtime (Runtime Environment Observation)
 
-Requires consent scopes app-launch + scripting-read (Step 1) / app-launch + visual (Step 2), and the doctor's capability rows.
+Requires a recorded environment other than `none` and the doctor's capability rows.
 
-**HOST-OBSERVATION EXCEPTION:** these agents run against the user's installed app on the host — the only permitted exception to the container rule. Dispatch SEQUENTIALLY, never in the same parallel batch (two agents cannot share the host GUI), and never in a batch with any other agent that drives the UI.
-
-**Per-action consent relay:** subagents cannot use AskUserQuestion. Any per-action consent defined by the skills (Tier B user-performed mutation probes, the appearance/dark-mode toggle) is handled by relay: the dispatched agent records the precise request(s) in its final report and treats any consent not explicitly granted in its dispatch prompt as NOT granted; the orchestrator relays each request to the user via AskUserQuestion and, if granted, re-dispatches the agent with the grant and the user's confirmation of the performed action. If the user declines, the orchestrator re-dispatches with "declined" so the agent records the gap.
+**ENVIRONMENT EXECUTION:** every target-facing command runs through the exec convention in the **macos-vm-execution skill** — `gf_exec` for non-GUI work, `gf_gui` for anything touching the window server, `gf_get`/`gf_put` for artifact transfer. The two macos-runtime agents dispatch SEQUENTIALLY (a single Aqua session per environment — two agents cannot share it), never in the same parallel batch, and never in a batch with any other agent that drives the UI.
 
 **Step 1: applescript-explorer** → `greenfield:analyzer`:
-- Prompt: "Role: applescript-explorer. Follow the **macos-runtime-observation skill**. Target app: `<app-name>` (bundle id `<bundle-id>`, path `<app-path>`). Workspace: `<workspace-path>`. Consent scopes: `<scopes>`. Preflight capability matrix: `<matrix>`. Using the capability inventory and sdef classification in `workspace/raw/macos/bundle/`, query live application state via osascript/JXA: enumerate scriptable classes, read live object graphs, map the object model to user-visible concepts. READ-ONLY: query/get verbs only — never create, set, delete, or move application objects; never open the app's URL scheme. Record OBS-NNN records with provenance citations (source=runtime-observation). Write to `workspace/raw/macos/runtime/observations/` and `scripting/`."
+- Prompt: "Role: applescript-explorer. Follow the **macos-runtime-observation skill**. Target app: `<app-name>` (bundle id `<bundle-id>`, path `<app-path>`). Environment: `<vm-tart|vm-lume|host-direct>`. VM: `<name>`. SSH target: `<user@ip>`. Guest workspace: `<path>`. Workspace: `<workspace-path>`. Preflight capability matrix: `<matrix>`. Follow the macos-vm-execution skill for the exec convention — run every target-facing command through gf_exec/gf_gui; verify `workspace/environment/runtime-environment.md` before starting. Using the capability inventory and sdef classification in `workspace/raw/macos/bundle/`, query and exercise live application state via osascript/JXA with full read+write: enumerate scriptable classes, read live object graphs, drive create/set/delete verbs to reveal behavior, and map the object model to user-visible concepts. Record OBS-NNN records with provenance citations (source=runtime-observation). Retrieve every artifact with gf_get before returning (the Layer 1 gate counts files on the host). Write to `workspace/raw/macos/runtime/observations/` and `scripting/`."
 - Commit: `[L1:applescript-explorer] Query live object model via scripting interface`
 
 **Step 2: ui-observer** (after Step 1 completes) → `greenfield:analyzer`:
-- Prompt: "Role: ui-observer. Follow the **macos-visual-exploration skill**. Target app: `<app-name>` (`<app-path>`). Workspace: `<workspace-path>`. Consent scopes: `<scopes>`. Preflight capability matrix: `<matrix>`. Run the preflight doctor phase, then explore via System Events accessibility scripting: enumerate windows, the full menu bar (every item with keyboard shortcut, enabled state, and mutation class), and navigate the primary screens. If Screen Recording is granted, capture each distinct UI state with screencapture to `workspace/raw/macos/runtime/screenshots/` with an .ax.md accessibility sidecar per capture; otherwise document from the accessibility tree alone. NEVER activate destructive or data-mutating items — navigation and inspection only. Write command-surface.md, window-inventory.md, flows, and a screenshot manifest under `workspace/raw/macos/runtime/` (source=visual-observation)."
-- Commit: `[L1:ui-observer] Observe UI structure, menus, and screens on host`
+- Prompt: "Role: ui-observer. Follow the **macos-visual-exploration skill**. Target app: `<app-name>` (`<app-path>`). Environment: `<vm-tart|vm-lume|host-direct>`. VM: `<name>`. SSH target: `<user@ip>`. Guest workspace: `<path>`. Workspace: `<workspace-path>`. Preflight capability matrix: `<matrix>`. Follow the macos-vm-execution skill for the exec convention — run every target-facing command through gf_exec/gf_gui; verify `workspace/environment/runtime-environment.md` before starting. Explore via System Events accessibility scripting with full read+write: enumerate windows, the full menu bar (every item with keyboard shortcut, enabled state, and mutation class), navigate the primary screens, and exercise UI flows including mutating actions. If Screen Recording is granted, capture each distinct UI state with screencapture to `workspace/raw/macos/runtime/screenshots/` with an .ax.md accessibility sidecar per capture; otherwise document from the accessibility tree alone. Record write/mutation probes under `workspace/raw/macos/runtime/mutations/`. Retrieve every artifact with gf_get before returning (the Layer 1 gate counts files on the host). Write command-surface.md, window-inventory.md, flows, and a screenshot manifest under `workspace/raw/macos/runtime/` (source=visual-observation)."
+- Commit: `[L1:ui-observer] Observe UI structure, menus, and screens in the runtime environment`
 
-### Source: app-data (Read-Only App Data Inspection)
+### Source: app-data (App Data Inspection)
 
-Requires consent scope app-data-read and the doctor's data-access capability.
+Requires a recorded environment other than `none` and the doctor's data-access capability.
 
 Dispatch `greenfield:analyzer`:
-- Prompt: "Role: data-inspector. Follow the **app-data-inspection skill**. Target bundle id: `<bundle-id>`. Data locations (from inventory/entitlements): `<paths>`. Workspace: `<workspace-path>`. Locate the app's data stores (group containers, Application Support, defaults domain). Open SQLite STRICTLY read-only via `sqlite3 \"file:<path>?mode=ro\"` — SELECT/PRAGMA only. Extract full schema, infer entities/lifecycles/relationships, sample only structural values (type codes, status flags) — NEVER copy the user's personal content beyond minimal illustrative values. Read preferences via `defaults read`. Record DBQ-NNN records with provenance citations (source=app-data-observation). Write to `workspace/raw/macos/app-data/`."
-- Commit: `[L1:data-inspector] Read-only data store schema and lifecycle inference`
+- Prompt: "Role: data-inspector. Follow the **app-data-inspection skill**. Target bundle id: `<bundle-id>`. Data locations (from inventory/entitlements): `<paths>`. Environment: `<vm-tart|vm-lume|host-direct>`. VM: `<name>`. SSH target: `<user@ip>`. Guest workspace: `<path>`. Workspace: `<workspace-path>`. Follow the macos-vm-execution skill for the exec convention — run every target-facing command through gf_exec/gf_gui; verify `workspace/environment/runtime-environment.md` before starting. Locate the app's data stores (group containers, Application Support, defaults domain). Read+write: capture a baseline under `workspace/raw/macos/app-data/baseline/`, open SQLite and extract the full schema, infer entities/lifecycles/relationships, drive mutations through the app and diff the stores into `workspace/raw/macos/app-data/mutation-diffs/`, and sample structural values (type codes, status flags). Read preferences via `defaults read`. Record DBQ-NNN records with provenance citations (source=app-data-observation). Retrieve every artifact with gf_get before returning (the Layer 1 gate counts files on the host). Write to `workspace/raw/macos/app-data/`."
+- Commit: `[L1:data-inspector] Data store schema, lifecycle inference, and mutation diffs`
+
+**Artifact retrieval.** For `vm-tart`/`vm-lume`, each agent MUST `gf_get` its output into `workspace/raw/macos/...` on the host before returning — evidence left in the guest does not exist as far as the Layer 1 gate is concerned.
 
 ### Layer 1 Gate Check (ENFORCED)
 
@@ -690,8 +693,9 @@ check_output() {
 # macos-runtime → workspace/raw/macos/runtime/
 # app-data      → workspace/raw/macos/app-data/
 
-# Consent-declined types are excluded types: "for each approved source type"
-# already skips anything marked excluded (consent declined) in inventory.md.
+# Types the Runtime Environment Gate marked excluded (environment: none/unavailable,
+# or unsigned under host-direct) are excluded types; the "for each approved source type"
+# loop already skips them.
 
 if [ "$GATE_FAIL" -eq 1 ]; then
   echo "STOP: Layer 1 gate failed. Re-dispatch failed source agents before proceeding."
@@ -1366,14 +1370,30 @@ git tag -a fidelity-check-complete -m "Layer 7: Fidelity validation passed — a
 
 ---
 
-## Container Cleanup
+## Environment Cleanup
 
-If runtime mode was active, stop and remove the target container after all pipeline work is complete:
+Runs at pipeline end AND on every abort path.
+
+If runtime (container) mode was active, stop and remove the target container:
 
 ```bash
 # Stop and remove container
 docker rm -f <container-name> 2>/dev/null || podman rm -f <container-name> 2>/dev/null || true
 ```
+
+If the runtime environment was a VM (`vm-tart`/`vm-lume`), stop then delete the working VM per the **macos-vm-execution skill**, keeping the provisioned base image (reclaim leftover space with `tart prune` / `lume prune`):
+
+```bash
+# vm-tart (vm-lume: substitute lume). Honors --keep-vm.
+if [ -z "$KEEP_VM" ]; then
+  tart stop "$GF_VM" 2>/dev/null || true
+  tart delete "$GF_VM" 2>/dev/null || true
+else
+  echo "Kept VM per --keep-vm. Delete it with:  tart delete $GF_VM"
+fi
+```
+
+`host-direct` has no cleanup beyond the user deleting their own disposable account — the plugin does nothing. When `--keep-vm` is set, the working VM is left in place and the exact `tart delete <name>` reclaim command is printed in the run summary.
 
 ---
 
@@ -1455,7 +1475,8 @@ git tag -a fidelity-check-complete -m "Layer 7: Fidelity validation passed (N cl
 | Agent produces partial output | Commit partial output. Flag for review. Continue. |
 | Gate fails | Remediate up to 3 times. If still failing, abort with exit code 1. |
 | Container build/crash | Log error. Mark runtime mode as unavailable/degraded. Continue with other modes. |
-| macOS permission denied (TCC) | Log which permission. Degrade per the preflight doctor matrix (drop screenshots / drop role / exclude source type). Continue with remaining sources. |
+| macOS permission denied (TCC) in the runtime environment | Re-run TCC provisioning in the environment, then the VNC manual grant; if still denied, degrade per the preflight doctor matrix (drop screenshots / drop role / exclude source type). Continue with remaining sources. |
+| Runtime environment unavailable or lost | Mark `macos-runtime` and `app-data` excluded. Continue with remaining sources. |
 | User interruption | Workspace state preserved in git. Re-run `/analyze` to resume automatically. |
 
 ---
@@ -1472,7 +1493,8 @@ Target:            <target-name>
 Workspace:         <workspace-path>
 Sources analyzed:  source, docs, sdk, community, git-history, tests, macos-bundle
 Sources skipped:   runtime (no container runtime), binary (no binaries found),
-                   macos-runtime, app-data (consent declined)
+                   macos-runtime, app-data (environment: none)
+Environment:       none
 Agents dispatched: N
 Gate 1:            PASS
 Gate 1b:           PASS
@@ -1492,6 +1514,7 @@ Workspace:          <workspace-path>
 Sources analyzed:   source, docs, sdk, community, git-history, tests,
                     macos-bundle, macos-runtime, app-data
 Sources skipped:    runtime (no container runtime), binary (no binaries found)
+Environment:        vm-tart (greenfield-<slug>-target, deleted)
 Agents dispatched:  N
 Gate 1:             PASS
 Gate 1b:            PASS
