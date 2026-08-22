@@ -1,89 +1,134 @@
 ---
 name: macos-visual-exploration
-description: Layer 1 skill for native macOS UI documentation via screencapture and the Accessibility (AX) tree. Preflight permission doctoring, window reconnaissance, menu-bar traversal, AX-tree dumps, navigation-only flow capture, edge cases, screenshot methodology. Loaded by the analyzer agent for the ui-observer role.
+description: Layer 1 skill for read+write visual exploration of a native macOS application inside a disposable environment. Preflight doctor, first-launch capture, window reconnaissance, menu inventory, AX-tree dumps, destructive-flow capture, screenshot methodology. Loaded by the analyzer agent for the ui-observer role.
 ---
 
 # macOS Visual Exploration Methodology
 
-Document behavioral intelligence through screen capture and Accessibility-tree inspection of a native macOS application. Every screenshot is an empirical observation. Every AX-tree dump is the machine-readable twin of that observation -- each capture ships both. This mode captures what the user SEES and what the system PRESENTS, without ever changing the user's data.
+Document behavioral intelligence through screen capture and Accessibility-tree inspection of a native macOS application. Every screenshot is an empirical observation. Every AX-tree dump is the machine-readable twin of that observation -- each capture ships both. This mode captures what the app SHOWS and what the system PRESENTS, and -- because it runs inside a disposable environment -- it drives the UI read+write to capture what the app DOES.
 
-This skill is the native-macOS sibling of the `visual-exploration` skill. Where that skill drives a browser with Playwright, this skill drives the host's `screencapture` and System Events AX queries. The framing, output shapes, and provenance rules mirror `visual-exploration` deliberately; the interaction policy is stricter because the target runs on the user's host with the user's real data.
+This skill is the native-macOS sibling of the `visual-exploration` skill. Where that skill drives a browser with Playwright, this skill drives `screencapture` and System Events AX queries inside the environment. The framing, output shapes, and provenance rules mirror `visual-exploration` deliberately; the interaction policy is read+write because the target runs inside a disposable environment -- a fresh VM or a throwaway account -- with no real data to protect.
 
 ## When to Use This Mode
 
-macOS visual exploration activates when the target is a native macOS application (an `.app` bundle), `macos-bundle-analysis` has run with the signature verified, and the user has granted host-observation consent covering `app-launch` and `visual`. All output is **RAW** (screenshots and AX dumps capture the target's proprietary UI in detail); it never reaches `workspace/output/` or `workspace/public/`.
+macOS visual exploration activates when the target is a native macOS application (an `.app` bundle), `macos-bundle-analysis` has run, and a disposable runtime environment has been chosen and recorded in `workspace/environment/runtime-environment.md` (verified in Phase 0). All output is **RAW** (screenshots and AX dumps capture the target's proprietary UI in detail); it never reaches `workspace/output/` or `workspace/public/`.
 
-## Host Execution Carve-Out
+## The Runtime Environment
 
-Runtime observation normally happens inside containers, no exceptions. Native macOS GUI applications cannot run in a Linux container, so this skill operates under a narrow carve-out: host observation is permitted ONLY when ALL of the following hold:
+This skill never runs against the user's own account or the user's own data. It runs inside a disposable runtime environment chosen at dispatch time and recorded in `workspace/environment/runtime-environment.md`: a throwaway macOS VM, or a throwaway user account on this Mac. The environment is pristine -- a fresh install of the target, a fresh account, no real data in it -- so analysis is READ+WRITE. You may create, edit, and delete through the app's own surfaces, run destructive flows, and manufacture states that do not occur naturally. Nothing you break belongs to anyone.
 
-1. The target is a user-installed application, signed and notarized.
-2. The signature has been verified: `workspace/raw/macos/bundle/signing.md` records a PASS.
-3. Consent is recorded in `workspace/consent/macos-host-observation.md` with a `**Granted scopes:**` line covering the scopes this skill needs.
-4. Every interaction with the application is read-only toward the application's data.
+**Environment verification.** Read `workspace/environment/runtime-environment.md`. It must exist, and its `**Environment:**` line must read `vm-tart`, `vm-lume`, or `host-direct`. A value of `none`, a missing line, or a missing file is a hard environmental gate: record it in `preflight-visual.md` and exit without touching the target. You VERIFY this artifact; you NEVER create or edit it. When `**Environment:**` is `host-direct`, `workspace/raw/macos/bundle/signing.md` must additionally record a PASS verdict -- record the gate and exit otherwise. For `vm-tart` and `vm-lume`, copy the artifact's `**Signature verdict:**` into your preflight table as data; it does not gate the run, because a bad signature inside a disposable VM costs a VM.
 
-If any condition fails, the container rule governs and this skill must not run. You NEVER create or edit the consent artifact -- you verify it exists and read its scopes. A missing artifact or scope is an environmental gate: record it in `preflight-visual.md` and exit.
+**host-direct caveat.** A VM is pristine by construction. A `host-direct` account is pristine only because it was freshly created -- the `**Disposable-account affirmation:**` line in the artifact is the user's statement that the account is empty and expendable. Artifacts produced under `host-direct` reflect whatever is actually in that account. Say so in the preflight file.
 
-This skill requires the `app-launch` and `visual` scopes. `appearance-toggle` (dark mode switching) is NOT a standing scope -- it requires fresh per-action consent relayed through the orchestrator in the dispatch prompt each time (see Phase 5).
+## Running Commands in the Environment
+
+Every command in this skill runs inside the environment, through the helpers defined by the `macos-vm-execution` skill. Never write a bare `ssh`, and never call `osascript`, `screencapture`, or a System Events query directly. Every screenshot and every AX query in this skill goes through `gf_gui`; a `screencapture` that skips it produces a valid PNG of nothing.
+
+| Helper | Use for |
+|--------|---------|
+| `gf_exec '<cmd>'` | Non-GUI work: `ls`, `plutil`, file plumbing |
+| `gf_gui '<cmd>'` | Anything that touches the window server: AppleScript/System Events, AX queries, `screencapture` |
+| `gf_get <guest-path> <host-path>` | Pull evidence back to `workspace/` |
+| `gf_put <host-path> <guest-path>` | Push a script or fixture in |
+
+`gf_gui` exists because of one failure mode: over SSH, a GUI command runs outside the guest's Aqua session and returns an empty AX tree, an empty window list, or a wallpaper-only screenshot -- with exit status 0. It looks exactly like a finding and is not one. `gf_gui` wraps the command in `launchctl asuser` against the auto-login session so it lands in the real GUI session. On `host-direct` both helpers are pass-throughs.
+
+`GF_ENV`, `GF_VM`, `GF_SSH`, and `GF_GUEST_WORKSPACE` arrive in your dispatch prompt. Write output under `$GF_GUEST_WORKSPACE/...` and `gf_get` it to the matching path under `workspace/raw/macos/...` before you finish. The Layer 1 gate counts files on the host: evidence still sitting in the guest does not exist.
 
 ## Why macOS Visual Exploration Matters
 
 Bundle analysis tells you what the app CAN do (capabilities, strings, entitlements). AppleScript exploration tells you what the app exposes to automation. Visual exploration tells you what the app LOOKS LIKE and how its interface is organized: affordances, the complete command surface with keyboard shortcuts, navigation structure (sidebars, tabs, window hierarchy), state representation as the user navigates, and feedback (selection, focus, enabled/disabled state). No other mode captures this.
 
-## Interaction Policy: NAVIGATION vs. MUTATING
+## Read+Write Conduct
 
-Every UI element gets the same classification `macos-bundle-analysis` applies to scripting commands: make/delete/move/duplicate/save/set verbs, or app-specific imperatives, are MUTATING; anything unknown is MUTATING. Consume its `capability-inventory.md` and strings catalog (`text-catalog.md`) for cross-checks throughout. The MUTATING prohibition targets the application's data and settings; System Events process/window/appearance attributes -- process visibility, window position/size, and the appearance toggle under per-action consent -- are sanctioned navigation-class operations WITH the mandatory restore obligations stated at each use site, not instances of the app-object `set` ban.
+Mutation is allowed. Exactly one prohibition survives, and it is about fidelity, not privacy:
 
-- **NAVIGATION** -- view switches, window operations (open/close/minimize/restore of windows, not documents), disclosure triangles, scrolling, tab selection, search fields (typed then cleared and verified). These may be activated. Search-field caveat: typed probes may persist in recent-searches stores outside the agent's view -- use innocuous probe strings (e.g. a single common letter) and note the possible persistence as an observation.
-- **MUTATING** -- anything that creates, changes, or deletes user data or settings. NEVER activated. Documented from visible presence only: label, position, enabled state, and what they likely do inferred from the label cross-checked against the bundle strings catalog.
+**All state changes go through the app's own surfaces -- UI actions, scripting commands, URL schemes, Shortcuts. Never change state by writing the app's data store, preference plists, or container files directly.** The app's reaction to its own write is the thing you are here to observe; a direct write destroys the observation.
 
-When in doubt, an element is MUTATING. A "New Task" button you did not press is still an observation -- an inferred one.
+Keep the READ/MUTATING classification from `macos-bundle-analysis`, with its meaning changed. It no longer decides whether you may click; it decides WHEN you click and what you capture around the click. Unknown still classifies as MUTATING -- schedule it late and bracket it, do not skip it.
+
+### NAVIGATION vs. MUTATING
+
+Every UI element gets the same classification `macos-bundle-analysis` applies to scripting commands: make/delete/move/duplicate/save/set verbs, or app-specific imperatives, are MUTATING; anything unknown is MUTATING. Consume its `capability-inventory.md` and strings catalog (`text-catalog.md`) for cross-checks throughout.
+
+- **NAVIGATION** -- view switches, window operations (open/close/minimize/restore of windows, not documents), disclosure triangles, scrolling, tab selection, search fields (typed then cleared and verified). Clicked freely. Search-field caveat: typed probes may persist in recent-searches stores outside the agent's view -- use innocuous probe strings and note the possible persistence as an observation.
+- **MUTATING** -- anything that creates, changes, or deletes data or settings. Exercised deliberately in Phases 4 and 6, one action at a time, with before+after captures plus an AX sidecar. The dialog a MUTATING action raises is often the most valuable screenshot in the run -- capture it before dismissing.
+- **UNKNOWN = MUTATING** -- schedule it late and bracket it; do not skip it.
+
+System Events process/window/appearance attributes -- process visibility, window position/size, and the appearance toggle -- are sanctioned navigation-class operations WITH the mandatory restore obligations stated at each use site, not instances of the app-object `set` ban.
+
+An unexercised element's effect is `inferred` from its label; an element exercised with a before/after pair is `confirmed`. Prefer the second -- the environment is disposable, so there is rarely a reason to leave a MUTATING element merely inferred.
 
 ## Phase 0: Preflight Doctor
 
 **Goal:** Verify every permission and precondition, pick a degradation mode BEFORE any exploration, and write `workspace/raw/macos/runtime/preflight-visual.md` with a PASS/FAIL table and exact remediation paths. Run all checks even after a failure -- the complete picture picks the mode.
 
-### 0.1 Consent and Signature
+### 0.1 Environment and Signature
 
-`workspace/consent/macos-host-observation.md` exists with `app-launch` and `visual` in its `**Granted scopes:**` line; `workspace/raw/macos/bundle/signing.md` records a PASS. Either failing: record the gate, exit. Do not launch the app.
+Perform the environment verification from **The Runtime Environment** above. Read `workspace/environment/runtime-environment.md`: it must exist and its `**Environment:**` line must read `vm-tart`, `vm-lume`, or `host-direct`. A `none`, a missing line, or a missing file is a hard environmental gate -- record it in `preflight-visual.md` and exit without touching the target. When `**Environment:**` is `host-direct`, `workspace/raw/macos/bundle/signing.md` must additionally record a PASS -- record the gate and exit otherwise. For `vm-tart` and `vm-lume`, copy the artifact's `**Signature verdict:**` into the preflight table as data; it does not gate the run. You VERIFY this artifact; you NEVER create or edit it.
 
 ### 0.2 Accessibility Permission
 
 ```bash
-osascript -e 'tell application "System Events" to return UI elements enabled'
+gf_gui "osascript -e 'tell application \"System Events\" to return UI elements enabled'"
 ```
 
-Must print `true`. FAIL remediation (record verbatim): "System Settings > Privacy & Security > Accessibility > enable <parent terminal app>. TCC cannot be granted from the CLI."
+Must print `true`. FAIL remediation depends on the environment. Under `vm-tart`/`vm-lume` a missing Accessibility grant is a provisioned-base defect -- the base image's TCC provisioning (see `macos-vm-execution` §9) did not take. Record it and request a re-provisioned base rather than editing TCC mid-run. Under `host-direct` (record verbatim): "System Settings > Privacy & Security > Accessibility > enable the terminal app in this account. TCC cannot be granted from the CLI."
 
 ### 0.3 Automation Permission (System Events)
 
 Run a trivial query:
 
 ```bash
-osascript -e 'tell application "System Events" to return name of first process'
+gf_gui "osascript -e 'tell application \"System Events\" to return name of first process'"
 ```
 
-Error -1743 ("Not authorized to send Apple events") means the Automation permission is missing or denied. Remediation: "System Settings > Privacy & Security > Automation > <parent terminal app> > enable System Events." If the first-use consent dialog cannot be answered non-interactively, record -1743 as a FAIL.
+Error -1743 ("Not authorized to send Apple events") means the Automation permission is missing or denied. Under a VM this is a provisioned-base defect (the `kTCCServiceAppleEvents` grant did not take) -- record it and request a re-provisioned base. Under `host-direct`: "System Settings > Privacy & Security > Automation > terminal app > enable System Events." If the first-use consent dialog cannot be answered non-interactively, record -1743 as a FAIL.
 
 ### 0.4 Screen Recording -- Silent-Failure Detection
 
-Screen Recording permission attaches to the PARENT terminal app, and its failure mode is silent: `screencapture` exits 0 and writes a wallpaper-only image. Detect it empirically:
+Screen Recording permission attaches to the terminal/login binary that issues the call, and its failure mode is silent: `screencapture` exits 0 and writes a wallpaper-only image. Detect it empirically:
 
 ```bash
-osascript -e "tell application id \"$BUNDLE_ID\" to activate"; sleep 1
-screencapture -x workspace/raw/macos/runtime/screenshots/000-preflight-frontmost.png
-osascript -e "tell application \"System Events\" to set visible of process \"$PROC\" to false"; sleep 1
-screencapture -x workspace/raw/macos/runtime/screenshots/000-preflight-hidden.png
-osascript -e "tell application \"System Events\" to set visible of process \"$PROC\" to true"
+gf_gui "osascript -e 'tell application id \"$BUNDLE_ID\" to activate'"; sleep 1
+gf_gui "screencapture -x $GF_GUEST_WORKSPACE/runtime/screenshots/000-preflight-frontmost.png"
+gf_gui "osascript -e 'tell application \"System Events\" to set visible of process \"$PROC\" to false'"; sleep 1
+gf_gui "screencapture -x $GF_GUEST_WORKSPACE/runtime/screenshots/000-preflight-hidden.png"
+gf_gui "osascript -e 'tell application \"System Events\" to set visible of process \"$PROC\" to true'"
 # Near-identical file sizes (within ~1%) => nothing app-specific captured => FAIL (wallpaper-only).
-# Remediation: System Settings > Privacy & Security > Screen & System Audio Recording >
-#   enable <parent terminal app>, then RESTART the terminal app.
-# Size heuristic can false-negative: fallback is showing the user the capture and asking.
+# Remediation: VM => the provisioned base lacks the kTCCServiceScreenCapture grant; request a
+#   re-provisioned base. host-direct => System Settings > Privacy & Security > Screen & System
+#   Audio Recording > enable the terminal app, then RESTART it.
+# Size heuristic can false-negative: fallback is gf_get'ing the capture and showing the user.
 ```
 
-If hiding the app barely changes the image size, the app was never in the image. Another window behind the target can defeat the heuristic -- when unsure, show the user `000-preflight-frontmost.png` and ask.
+If hiding the app barely changes the image size, the app was never in the image. Another window behind the target can defeat the heuristic -- when unsure, `gf_get` `000-preflight-frontmost.png` to the host and ask the user.
 
-### 0.5 Degradation Decision
+### 0.5 GUI-Session Attachment
+
+The dominant failure mode of this entire skill is a GUI command that runs in the detached SSH session instead of the Aqua session: it returns an empty AX tree, an empty window list, or a wallpaper-only screenshot, and it exits 0. Prove the session is attached before trusting any capture. Run the same query both ways and compare:
+
+```bash
+gf_exec "osascript -e 'tell application \"System Events\" to count processes'"   # detached session
+gf_gui  "osascript -e 'tell application \"System Events\" to count processes'"   # Aqua session
+```
+
+The `gf_gui` count must be substantially higher (a real desktop has dozens of processes; a detached session sees almost none). If BOTH come back empty or error, there is no window server to attach to -- a provisioning defect (auto-login did not occur, or no console session exists). This is a HARD STOP: record it in `preflight-visual.md` and exit. Do NOT fall back to `gf_exec` for the GUI phases -- an empty AX tree from a detached session is not a finding.
+
+### 0.6 App Present and Usable Without Sign-In
+
+Confirm the target is installed in the environment and reaches a usable state without credentials:
+
+```bash
+gf_exec "ls -d /Applications/<App>.app"        # present?
+gf_gui  "osascript -e 'tell application id \"$BUNDLE_ID\" to activate'"; sleep 2
+gf_gui  "screencapture -x $GF_GUEST_WORKSPACE/runtime/screenshots/000-preflight-firstscreen.png"
+```
+
+If the app is absent, that is a provisioning gate (the target was never installed -- see `macos-vm-execution` target provisioning), not this skill's job to fix: record and exit. If the first screen is a hard sign-in or paywall wall with no usable surface behind it and no credentials are available, record `app-unusable-without-sign-in` and exit -- there is nothing to explore. A trial or onboarding screen that can be dismissed forward is NOT a wall; capture it in Phase 1.0.
+
+### 0.7 Degradation Decision
 
 Record the chosen mode in `preflight-visual.md` before any exploration:
 
@@ -92,20 +137,22 @@ Record the chosen mode in `preflight-visual.md` before any exploration:
 | **both** | Accessibility AND Screen Recording pass | Full methodology: PNGs + `.ax.md` sidecars |
 | **AX-only** | Screen Recording fails | No PNGs; all evidence in `.ax.md` dumps and inventories, "screenshot" slots reference sidecars |
 | **screenshots-only** | Accessibility fails | No AX means no menu traversal -- `command-surface.md` records the gap. Full-screen captures only |
-| **abort** | Both fail, or a consent/signature gate | `preflight-visual.md` is the deliverable; the gates are environmental data |
+| **abort** | Both fail, or an environment gate | `preflight-visual.md` is the deliverable; the gates are environmental data |
 
-### 0.6 Preflight Output Format
+### 0.8 Preflight Output Format
 
 ```markdown
 # Preflight: Visual Exploration -- <App Name>
 
 | Check | Result | Detail | Remediation |
 |-------|--------|--------|-------------|
-| Consent artifact + scopes | PASS | app-launch, visual granted | -- |
+| Runtime environment | PASS | vm-tart (greenfield-things3-target) | -- |
 | Signature (signing.md) | PASS | Developer ID, notarized | -- |
 | Accessibility | PASS | UI elements enabled = true | -- |
 | Automation > System Events | PASS | trivial query returned | -- |
-| Screen Recording | FAIL | captures within 0.4% size | Screen & System Audio Recording > enable <terminal>, restart it |
+| Screen Recording | FAIL | captures within 0.4% size | provisioned base missing ScreenCapture grant; re-provision |
+| GUI-session attachment | PASS | gf_gui count 274 vs gf_exec count 3 | -- |
+| App present + usable | PASS | launches to onboarding, dismissible | -- |
 
 **Degradation mode:** AX-only
 ```
@@ -114,7 +161,23 @@ Record the chosen mode in `preflight-visual.md` before any exploration:
 
 **Goal:** Activate the app, enumerate every window via System Events, and capture each one. This seeds `window-inventory.md`.
 
+### 1.0 First-Launch Capture
+
+The app has NEVER launched in this environment -- it is pristine. First launch is a one-time, unrecoverable event: onboarding screens, first-run tips, permission primers, and the empty initial state appear once and never again in this clone. Capture them BEFORE anything else.
+
+- Take the onboarding one screen at a time: `first-01-`, `first-02-`, ... one screenshot each, each with its `.ax.md` sidecar.
+- Advance only AFTER both halves (PNG + sidecar) are on disk. Dismiss/continue forward only -- never backward, and never skip a screen uncaptured.
+- This sequence is unrecoverable except by rolling the environment back to its pristine snapshot. If a capture fails partway, do NOT keep clicking: request a rollback to the pristine snapshot (the `macos-vm-execution` `gf_rollback` path) and restart the sequence. Coordinate dispatch order with the runtime skill so the pristine snapshot exists before first launch.
+
+```bash
+gf_gui "osascript -e 'tell application id \"$BUNDLE_ID\" to activate'"; sleep 2
+gf_gui "screencapture -x $GF_GUEST_WORKSPACE/runtime/screenshots/first-01-onboarding.png"
+# dump the AX sidecar, gf_get both halves, then advance one screen and repeat as first-02-, ...
+```
+
 ### 1.1 Activation and Enumeration
+
+Run the enumeration through `gf_gui`; a bare `osascript` over SSH returns an empty window list:
 
 ```applescript
 tell application id "com.example.app" to activate
@@ -133,19 +196,19 @@ Record per window: name, position, size, main flag, minimized flag.
 `screencapture -l <windowid>` captures a single window cleanly, but window IDs are unobtainable from a plain shell. The built-ins-only trick: read the window's frame from the AX tree and capture that rectangle:
 
 ```bash
-read -r X Y W H <<< "$(osascript -e "tell application \"System Events\" to tell process \"$PROC\"
+read -r X Y W H <<< "$(gf_gui "osascript -e 'tell application \"System Events\" to tell process \"$PROC\"
   set p to position of window 1
   set s to size of window 1
   return (item 1 of p as text) & \" \" & (item 2 of p as text) & \" \" & (item 1 of s as text) & \" \" & (item 2 of s as text)
-end tell")"
-screencapture -x -o -R"$X,$Y,$W,$H" workspace/raw/macos/runtime/screenshots/001-main-window.png
+end tell'")"
+gf_gui "screencapture -x -o -R\"$X,$Y,$W,$H\" $GF_GUEST_WORKSPACE/runtime/screenshots/001-main-window.png"
 ```
 
-Fallback when the bounds query fails: full-screen `screencapture -x -o` with the app frontmost, noted in the manifest. Peekaboo-class tools that expose window IDs are an approved-install-only upgrade -- never install anything without explicit user approval.
+Fallback when the bounds query fails: full-screen `gf_gui "screencapture -x -o"` with the app frontmost, noted in the manifest. Peekaboo-class tools that expose window IDs would have to be baked into the provisioned base image -- that is the `macos-vm-execution` provisioning job, done once when the base is built, never a mid-run install. Under `host-direct`, install nothing into the account.
 
 ### 1.3 Initial Assessment
 
-Document, as the browser sibling does for a landing page: application shape (single-window, multi-window, library/document model), primary navigation (sidebar, source list, tab bar, toolbar), visible affordances (noting MUTATING buttons without pressing them), and window chrome (title, toolbar style, resizability).
+Document, as the browser sibling does for a landing page: application shape (single-window, multi-window, library/document model), primary navigation (sidebar, source list, tab bar, toolbar), visible affordances (noting MUTATING affordances for deliberate exercise in Phases 4/6), and window chrome (title, toolbar style, resizability).
 
 ## Phase 2: Menu-Bar Traversal
 
@@ -192,12 +255,12 @@ Every menu item gets a sequential `CMD-NNN` ID and a mutation class:
 ```markdown
 | ID | Menu Path | Shortcut | Enabled | Mutation Class |
 |----|-----------|----------|---------|----------------|
-| CMD-041 | File > New To-Do | ⌘N | yes | MUTATING -- never invoke |
-| CMD-042 | File > New Project | ⌥⌘N | yes | MUTATING -- never invoke |
+| CMD-041 | File > New To-Do | ⌘N | yes | MUTATING -- exercised in Phase 6 |
+| CMD-042 | File > New Project | ⌥⌘N | yes | MUTATING -- not exercised (destructive, no undo) |
 | CMD-043 | View > Show Sidebar | ⌃⌘S | yes | NAVIGATION |
 ```
 
-Cross-check each menu label against the bundle strings catalog (`workspace/raw/macos/bundle/text-catalog.md`). A label found in both the live menu and the strings catalog is two independent sources -- the command's existence is `confidence=confirmed`. What a MUTATING command DOES remains `inferred` from its label.
+Cross-check each menu label against the bundle strings catalog (`workspace/raw/macos/bundle/text-catalog.md`). A label found in both the live menu and the strings catalog is two independent sources -- the command's existence is `confidence=confirmed`. What a MUTATING command DOES is `inferred` from its label until Phase 6 exercises it, at which point it becomes `confirmed`.
 
 ### 2.4 Menu Screenshots
 
@@ -245,11 +308,11 @@ The walk records role, title/value, enabled state, position, and size per elemen
 | AXTextField | Search | yes | navigation -- typed, cleared | step-05-search.png, step-06-search-cleared.png |
 ```
 
-`Action Taken` is only ever `none` or `navigation`. There is no third value.
+`Action Taken` takes one of `none`, `navigation`, or `mutating -- see flows/<flow>`.
 
-## Phase 4: Flow Documentation (Navigation-Only)
+## Phase 4: Flow Documentation
 
-**Goal:** Document end-to-end navigation flows with a capture pair at every state transition. Each flow gets a directory `workspace/raw/macos/runtime/flows/<flow>/` containing `step-NN-*.png`, `step-NN-*.ax.md`, and `flow.md` -- mirroring `visual-exploration` exactly.
+**Goal:** Document end-to-end flows -- navigation AND mutation -- with a capture pair at every state transition. Each flow gets a directory `workspace/raw/macos/runtime/flows/<flow>/` containing `step-NN-*.png`, `step-NN-*.ax.md`, and `flow.md` -- mirroring `visual-exploration` exactly.
 
 ### 4.1 Core Flows to Document
 
@@ -259,7 +322,12 @@ The walk records role, title/value, enabled state, position, and size per elemen
 | **Window lifecycle** | New window, close, reopen, restore -- window ops only, never documents | High |
 | **Menu-driven view changes** | Invoke each NAVIGATION-classed CMD and capture the result | High |
 | **Search/filter** | Type a query, observe results, press Escape, verify the field cleared | Medium |
-| **Settings window** | Open Settings, screenshot every tab, CHANGE NOTHING | Medium |
+| **Create** | Create a new item through the app's own surface; capture before, the creation sheet/dialog, and after | High |
+| **Edit** | Modify an existing item; before/after pair around the change | High |
+| **Complete / state-change** | Toggle a state (complete, flag, archive); before/after pair | High |
+| **Delete-and-trash** | Delete an item, capture the confirmation dialog and the trashed result; before/after pair | High |
+| **Settings-change** | Open Settings, change a setting, capture the effect, restore the original within the run | Medium |
+| **Undo** | Perform a mutation, then Undo it; capture that the app reverts; before/after pair | Medium |
 
 ### 4.2 Flow Format
 
@@ -290,15 +358,15 @@ Each `flow.md` uses the Step/Screenshot/Action/State/Feedback shape plus Behavio
 
 ### 4.3 Interaction Policy for Flows
 
-- Clicks only on NAVIGATION-classed elements.
-- Keyboard input only for navigation shortcuts and search fields; every search field cleared afterward, verified by a follow-up capture.
-- Before AND after captures per interaction -- the behavioral claim is the difference between the pair.
-- Disabled elements documented as disabled, never forced.
-- MUTATING elements documented from visible presence only, never activated.
+- One action per step -- the behavioral claim is the difference between the before and after capture.
+- Every interaction gets a before AND an after capture, each with its AX sidecar.
+- Disabled elements are documented as disabled, never forced.
+- Modal sheets and dialogs are captured BEFORE dismissal; record both button labels. To observe both outcomes, run the flow twice and press a different button each time.
+- Destructive steps the app cannot undo are deferred to Phase 6, where they are bracketed by a snapshot.
 
 ## Phase 5: Edge Cases
 
-**Goal:** Probe boundaries that reveal behavior -- without ever manufacturing state by touching data.
+**Goal:** Probe boundaries that reveal behavior: window geometry limits, appearance, and manufactured empty states.
 
 ### 5.1 Window Resize
 
@@ -309,34 +377,54 @@ Record the original geometry first. Probe the minimum size and a large size, cap
   <!-- cite: source=visual-observation, ref=screenshots/edge-resize-min.png, confidence=confirmed, agent=ui-observer -->
 ```
 
-### 5.2 Dark Mode (Fresh Consent Required)
+### 5.2 Dark Mode
 
-Appearance toggling changes a SYSTEM setting, and `appearance-toggle` is not a standing scope. Consent for EACH toggle must arrive via the dispatch prompt (relayed by the orchestrator); if no explicit grant is present, skip the dark-mode phase and record it as an untested gap. If granted:
+Toggle the system appearance, capture the main views in both appearances, then toggle back for comparability:
 
-```applescript
-tell application "System Events" to tell appearance preferences to set dark mode to not dark mode
+```bash
+gf_gui 'osascript -e "tell application \"System Events\" to tell appearance preferences to set dark mode to not dark mode"'
+# capture the main views in the toggled appearance, then toggle back unconditionally
+gf_gui 'osascript -e "tell application \"System Events\" to tell appearance preferences to set dark mode to not dark mode"'
 ```
 
-Capture the main views in the toggled appearance, then TOGGLE BACK unconditionally -- restoration is not contingent on capture success. If consent is declined, record dark-mode rendering as an untested gap in `visual-behaviors.md`.
+Restoration here is about comparability, not consent -- the toggled-back state matches every other capture in the run.
 
 ### 5.3 Empty States
 
-Document empty states ONLY if naturally present. NEVER delete or move data to manufacture one.
+Manufacture empty states rather than waiting for them. Delete the entire corpus in one destination through the app's own surfaces, capture the empty-state illustration, headline, and call-to-action, then either re-seed the destination or note it left-empty in the manifest. The empty state is a designed screen most users never see twice -- it is high-value evidence.
 
 ### 5.4 Out of Scope
 
 Display and resolution variations (multiple monitors, scaled resolutions) are explicitly out of scope.
+
+## Phase 6: Destructive Flows and Their Dialogs
+
+**Goal:** Exercise the MUTATING surface that Phases 4 and 5 deferred -- the irreversible and destructive flows -- and capture the dialogs they raise. In a disposable environment these are safe; the dialogs are often the single most valuable screenshots in the whole run.
+
+Snapshot the environment before any irreversible flow (`gf_snapshot` per `macos-vm-execution`), `gf_get` all evidence to the host BEFORE any rollback, and note in `visual-behaviors.md` which captures were taken post-rollback. Under `host-direct` there is no snapshot/rollback -- probes that would depend on rollback safety are simply not run there.
+
+Document, each with a before/after pair and the dialog captured before dismissal:
+
+- **Delete-confirmation alerts** -- capture the exact wording and cross-check it against `text-catalog.md`; the live alert and the compiled string are two independent sources.
+- **Empty-trash** and any secondary confirmation.
+- **Bulk-delete** -- select many, delete, capture the (often different) bulk confirmation.
+- **Induced error alerts** -- drive the app into an error state through its own surfaces and capture the alert.
+- **Manufactured empty states** produced by deletion (cross-reference Phase 5.3).
+
+Every destructive flow raises a behavioral claim cited to the before/after captures and the dialog sidecar. Captures outside a specific flow directory use the `mut-NN-` prefix.
 
 ## Screenshot Naming Convention
 
 | Prefix | Usage |
 |--------|-------|
 | `000-` | Phase 0: preflight captures |
+| `first-NN-` | Phase 1.0: first-launch / onboarding captures |
 | `001-` through `099-` | Phase 1: window reconnaissance |
 | `win-NNN-` | Phase 3: window inventory captures |
 | `menu-NNN-` | Phase 2: open-menu captures |
 | `step-NN-` | Phase 4: flows (within the flow subdirectory) |
 | `edge-` | Phase 5: edge case exploration |
+| `mut-NN-` | Phase 6: destructive-flow captures outside a flow directory |
 
 ### Directory Structure
 
@@ -360,7 +448,7 @@ workspace/raw/macos/runtime/
     screenshot-manifest.md     # Every capture, its sidecar, and what it evidences
 ```
 
-`screenshot-manifest.md` lists every capture with its sidecar and what it evidences. This satisfies output gates and lets specs cite records, not bare images. Do not write to `observations/` or `scripting/` -- those belong to the applescript-explorer role. Your observation records live inside your own output files.
+Every path above is written in-guest under `$GF_GUEST_WORKSPACE/runtime/...` and pulled to the host with `gf_get` before the run finishes. The Layer 1 gate counts files on the HOST under `workspace/raw/macos/runtime/` -- evidence still in the guest does not exist. `screenshot-manifest.md` lists every capture with its sidecar and what it evidences, and it must reflect what landed on the HOST, not what was captured in the guest. This satisfies output gates and lets specs cite records, not bare images. Do not write to `observations/` or `scripting/` -- those belong to the applescript-explorer role. Your observation records live inside your own output files.
 
 ## Provenance Rules
 
@@ -378,7 +466,7 @@ All claims from this skill use `source=visual-observation` with `agent=ui-observ
 Identical to `visual-exploration`:
 
 - **confirmed** -- the behavior is directly visible in a capture or demonstrated by a before/after pair
-- **inferred** -- the element exists but was not exercised. This is the DEFAULT for ALL MUTATING elements: what a "Delete Project" menu item likely does comes from its label and the strings catalog, not from observation.
+- **inferred** -- the element exists but was not exercised. This is the default only for an UNEXERCISED element, which is now a shrinking set: in a disposable environment most MUTATING elements get exercised and escalate to `confirmed`. An element left unexercised needs a recorded reason (e.g. no undo and out of snapshot budget).
 - **assumed** -- visual-cue guesswork (e.g., a grayed row is assumed to represent a disabled feature)
 
 ### Evidence Independence
@@ -395,34 +483,41 @@ Every behavioral claim gets an inline `<!-- cite: -->` comment immediately after
 
 | Failure | Response |
 |---------|----------|
+| Environment unreachable / `**Environment:**` = none or missing artifact | Hard environmental gate: record in `preflight-visual.md` and exit |
+| GUI session not attached (gf_gui and gf_exec both empty) | HARD STOP -- provisioning defect; do NOT fall back to `gf_exec`, an empty AX tree is not a finding |
+| App unusable without sign-in (hard paywall/login wall) | Record `app-unusable-without-sign-in` and exit; nothing to explore |
 | Screen Recording permission missing | AX-only mode: no PNGs, all evidence in `.ax.md` and inventories |
 | Accessibility permission missing | Screenshots-only mode: no AX means no menu traversal; record the gap |
 | Both missing | Abort; `preflight-visual.md` with remediation paths is the deliverable |
 | Window-bounds query fails | Full-screen capture fallback, noted in the manifest |
 | `entire contents` timeout | Chunked walk by top-level UI element |
-| Dark-mode consent declined | Record as untested gap; do not toggle |
-| App owned by another login session (error -1728 on process access) | Abort; the session boundary is environmental data |
+| Stuck modal blocks further AX queries | Dismiss forward if possible; if wedged, `gf_get` what exists then roll back to the pristine snapshot |
+| Rollback discarded captures never pulled to host | Data loss -- always `gf_get` before `gf_rollback`; note any post-rollback captures in `visual-behaviors.md` |
+| App owned by another login session (error -1728 on process access) | Under host-direct, abort; the session boundary is environmental data |
 
 Every failure mode produces data. A permission gate documented with its exact remediation path is a deliverable, not a dead end.
 
 ## Definition of Done
 
 - [ ] `preflight-visual.md` records every check with PASS/FAIL, remediation paths for failures, and the chosen degradation mode
+- [ ] First-launch / onboarding captured, or its absence recorded (the app launched straight into a usable state)
 - [ ] Every window captured with its `.ax.md` sidecar (or gap-noted per the degradation mode)
 - [ ] `command-surface.md` covers every menu item including submenus, with shortcut, enabled state, and mutation class; CMD-NNN IDs are sequential
-- [ ] `window-inventory.md` complete, with `Action Taken` only ever `none` or `navigation`
-- [ ] At least the View-navigation flow documented with before/after pairs
-- [ ] All search fields cleared, window geometry restored, appearance restored -- with the restoration itself captured
+- [ ] `window-inventory.md` complete, with `Action Taken` one of `none`, `navigation`, or `mutating`
+- [ ] At least one create, one edit, one state-change, and one delete flow documented with before/after pairs and their dialogs
+- [ ] Every MUTATING command either exercised (escalated to `confirmed`) or recorded as not-exercised with a reason
+- [ ] At least one manufactured empty state captured
+- [ ] Appearance and window geometry restored WITHIN the run for comparability (app data needs no restoration -- the environment is disposable); the restoration itself captured
 - [ ] `visual-behaviors.md` synthesizes behavioral claims, every claim cited
-- [ ] **Zero MUTATING elements invoked -- asserted explicitly in `visual-behaviors.md`**
-- [ ] `screenshot-manifest.md` lists every capture, its sidecar, and what it evidences
+- [ ] Every capture and its sidecar `gf_get`'d to the host; `screenshot-manifest.md` reflects what is on the HOST, not the guest
 
 ## Rules
 
 1. **Screenshots and AX dumps are RAW** -- they go to `workspace/raw/`, never to `workspace/output/` or `workspace/public/`.
 2. **Every capture ships both halves** -- a `.png` without its `.ax.md` sidecar is half an observation (except in a degraded mode, where the gap is recorded).
-3. **Never activate MUTATING elements** -- unknown means MUTATING. Presence plus label plus strings catalog supplies the inferred behavior.
-4. **Restore everything you disturb** -- geometry, appearance, search fields, open menus. Cleanup captures are evidence of restoration.
-5. **Consent is verified, never created** -- and `appearance-toggle` is consented per-action, never assumed.
-6. **Permission gates are data** -- a FAIL row with an exact System Settings path is a deliverable.
+3. **Exercise MUTATING elements deliberately** -- late, one at a time, each bracketed by before/after captures and the dialog it raises. Unknown still means MUTATING; an unexercised MUTATING element needs a recorded reason.
+4. **Restore within a run, not after it** -- geometry, appearance, open menus, and search fields are restored for comparability; app data is NOT restored, because the environment is disposable.
+5. **The environment artifact is verified, never created** -- and every GUI-touching command goes through `gf_gui`, never a bare `osascript`/`screencapture` over SSH.
+6. **Permission gates are data** -- a FAIL row with an exact remediation path is a deliverable.
 7. **Cite as you go** -- every behavioral claim gets its `<!-- cite: -->` comment immediately, `ref` pointing at a screenshot or sidecar path.
+8. **A capture that never left the guest is not evidence** -- `gf_get` every screenshot and sidecar to the host before finishing; the Layer 1 gate counts host files.
