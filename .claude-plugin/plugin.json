@@ -18,6 +18,7 @@
     "./skills/community-intelligence",
     "./skills/runtime-observation",
     "./skills/container-execution",
+    "./skills/macos-vm-execution",
     "./skills/source-analysis",
     "./skills/multi-source-synthesis",
     "./skills/behavioral-spec-writing",
