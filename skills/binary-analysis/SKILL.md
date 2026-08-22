@@ -14,7 +14,7 @@ Binary analysis activates when:
 - The discovery inventory identifies compiled binaries at the target path
 - Other modes discover compiled artifacts during analysis (e.g., a bundled native binary inside an npm package)
 
-For macOS app bundles, binary-analysis covers the executables — `Contents/MacOS/*` and `Contents/Frameworks/*` binaries, as listed in `workspace/raw/macos/bundle/binary-handoff.md`. Bundle resources (Info.plist, sdef, .lproj string catalogs, asset catalogs) are owned by the macos-bundle-analysis skill — do not re-extract them. Entitlements are also owned by macos-bundle-analysis (its signing phase runs codesign); consume `workspace/raw/macos/bundle/signing.md` rather than re-running codesign.
+For macOS app bundles, binary-analysis covers the executables — `Contents/MacOS/*` and `Contents/Frameworks/*` binaries, as listed in `workspace/raw/macos/bundle/binary-handoff.md`. Bundle resources (Info.plist, sdef, .lproj string catalogs, asset catalogs) are owned by the macos-bundle-analysis skill — do not re-extract them. Entitlements are also owned by macos-bundle-analysis (its signing phase runs codesign); consume `workspace/raw/macos/bundle/signing.md` rather than re-running codesign. When an in-environment bundle re-run exists (the executed binary differs from the host build), consume the in-environment `signing.md`/`binary-handoff.md` for the executed binary rather than the host copies.
 
 ## Binary Type Taxonomy
 
@@ -306,7 +306,7 @@ Analysis tools may be complex to install. Pre-built containers hold the tools (n
 | .NET | mcr.microsoft.com/dotnet/sdk:8.0 | ILSpy CLI |
 | WASM | rust:1.75 | wasm-tools, wabt |
 
-**Mach-O exception:** Mach-O analysis runs on the macOS host, not in a container — `otool`, `nm`, `codesign`, `strings`, and `xcrun swift-demangle` are macOS system tools that do not exist in Linux images. All are read-only static inspectors; the target is never executed. Ghidra/radare2 deep analysis of Mach-O may still use the ubuntu container (both parse Mach-O), mounting the binary read-only.
+**Mach-O exception:** Mach-O analysis runs on macOS, not in a container — `otool`, `nm`, `codesign`, `strings`, and `xcrun swift-demangle` are macOS system tools that do not exist in Linux images. It runs on the **host** for host-side/static targets, and **in the runtime environment** (via the `macos-vm-execution` skill's `gf_exec`) when the executed binary lives there — a VM running a vendor-download build, per the executed-binary-fidelity handoff from macos-bundle-analysis. All are read-only static inspectors; the target is never executed by this skill. In a disposable VM the agent may install heavier tooling — Ghidra plus a JDK, radare2 — freely, since the environment is thrown away; that is often what makes the VM the better place to deep-analyze the executed Mach-O. Ghidra/radare2 deep analysis of Mach-O may also use the ubuntu container (both parse Mach-O), mounting the binary read-only.
 
 Containers mount the target at `/target:ro` and write output to `/output:rw`. Containers run with `--network=none`. The target is never executed inside these containers.
 

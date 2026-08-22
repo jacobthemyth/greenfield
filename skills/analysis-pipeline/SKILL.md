@@ -97,14 +97,14 @@ Layer 1 auto-discovers available intelligence sources and consumes all of them b
 | Test Suites | test-reader, test-runner | workspace/raw/test-evidence/ | RAW |
 | Machine-Readable Contracts | contract-parser | workspace/public/contracts/ | PUBLIC |
 | macOS Bundle (static) | bundle-inspector | workspace/raw/macos/bundle/ (contract summaries → workspace/public/contracts/) | RAW + PUBLIC |
-| macOS Host Runtime (consent-gated) | applescript-explorer, ui-observer | workspace/raw/macos/runtime/ | RAW |
-| App Data Stores (consent-gated, read-only) | data-inspector | workspace/raw/macos/app-data/ | RAW |
+| macOS Runtime Environment | applescript-explorer, ui-observer | workspace/raw/macos/runtime/ | RAW |
+| App Data Stores (runtime environment) | data-inspector | workspace/raw/macos/app-data/ | RAW |
 
 Sources are auto-discovered. Use `--exclude` to skip specific source types.
 
 Sources are excluded only by `--exclude` flag or user request during discovery negotiation.
 
-The `macos-runtime` and `app-data` source types additionally require the dispatch-time host-observation consent gate, recorded in `workspace/consent/macos-host-observation.md`. Declined consent behaves exactly like `--exclude` for those source types. `macos-bundle` is static analysis only — it needs no consent and never launches the app.
+The `macos-runtime` and `app-data` source types additionally require the dispatch-time Runtime Environment Gate, which chooses and records the analysis environment (`vm-tart`, `vm-lume`, `host-direct`, or `none`) in `workspace/environment/runtime-environment.md`. An environment of `none` behaves exactly like `--exclude` for those source types. `macos-bundle` is static analysis only — it always runs on the host, needs no environment, and never launches the app.
 
 ## Source Coverage
 
@@ -227,8 +227,11 @@ workspace/
 │   │   │   ├── observations/  # (plus preflight.md, preflight-visual.md, command-surface.md, window-inventory.md, visual-behaviors.md, screenshot-manifest.md at runtime/ root)
 │   │   │   ├── scripting/
 │   │   │   ├── screenshots/
-│   │   │   └── flows/
+│   │   │   ├── flows/
+│   │   │   └── mutations/     # Write/mutation probe captures
 │   │   └── app-data/          # data-inspector output
+│   │       ├── baseline/      # Pre-mutation data-store baseline
+│   │       └── mutation-diffs/ # Data-store diffs after mutation probes
 │   ├── project-history/       # git-archaeologist output
 │   ├── test-evidence/         # test-reader, test-runner output
 │   ├── synthesis/             # Layer 2 output
@@ -245,8 +248,8 @@ workspace/
 │       └── validation/
 ├── output/                     # Sanitized specs
 │   └── specs/
-├── consent/                   # Host-observation consent artifacts
-│   └── macos-host-observation.md
+├── environment/               # Runtime environment artifact
+│   └── runtime-environment.md
 ├── provenance/                # Session logs
 │   └── sessions/
 └── workspace.json             # Metadata

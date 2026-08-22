@@ -56,6 +56,8 @@ When writing or updating a raw spec, always include `derived_from` metadata:
 - For runtime observations: include the observation timestamp
 - For test evidence: include the file hash of the evidence artifact
 
+A `vm-*` runtime environment is NOT persistent state. On resume the VM is re-provisioned from the recorded base image, or the Runtime Environment Gate re-runs — never assume a prior guest is still alive.
+
 ## Incremental Detection
 
 When `/analyze` is invoked, before workspace initialization:

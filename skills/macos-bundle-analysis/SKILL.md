@@ -14,18 +14,18 @@ macOS bundle analysis activates when:
 - A bundle identifier is resolved to an installed app via `mdfind "kMDItemCFBundleIdentifier == '$BUNDLE_ID'"`
 - Another mode discovers an embedded `.app` bundle during analysis
 
-This mode requires **zero permissions** and **never launches the target**. It runs BEFORE any consent gate; its outputs are the scheduling input for the consent-gated siblings (`macos-runtime-observation`, `macos-visual-exploration`, `app-data-inspection`). All raw output goes to `workspace/raw/macos/bundle/`; the only exceptions are three contract summaries in `workspace/public/contracts/` (machine-readable vendor declarations, not proprietary expression).
+This mode requires **zero permissions** and **never launches the target**. It runs on the host before any runtime environment exists; its outputs are the scheduling input for the runtime-environment siblings (`macos-runtime-observation`, `macos-visual-exploration`, `app-data-inspection`). All raw output goes to `workspace/raw/macos/bundle/`; the only exceptions are three contract summaries in `workspace/public/contracts/` (machine-readable vendor declarations, not proprietary expression).
 
 ## Role in the macOS Skill Family
 
-| Skill | Role | Consent Gate | Consumes From This Skill |
+| Skill | Role | Runtime Environment | Consumes From This Skill |
 |-------|------|-------------|--------------------------|
-| `macos-bundle-analysis` (this skill) | `bundle-inspector` | None — static, read-only | — |
-| `macos-runtime-observation` | `applescript-explorer` | Yes | READ/MUTATING classification, capability inventory, signature verdict |
-| `macos-visual-exploration` | `ui-observer` | Yes | READ/MUTATING classification, capability inventory, signature verdict |
-| `app-data-inspection` | `data-inspector` | Yes | Container and group container IDs from entitlements, signature verdict |
+| `macos-bundle-analysis` (this skill) | `bundle-inspector` | None (host-side static) | — |
+| `macos-runtime-observation` | `applescript-explorer` | VM or host-direct | READ/MUTATING classification, capability inventory, signature verdict |
+| `macos-visual-exploration` | `ui-observer` | VM or host-direct | READ/MUTATING classification, capability inventory, signature verdict |
+| `app-data-inspection` | `data-inspector` | VM or host-direct | Container and group container IDs from entitlements, signature verdict |
 
-The signature verdict (PASS/FAIL in `signing.md`) is a **hard precondition** for all three consent-gated skills. FAIL means they are not scheduled, full stop; static analysis continues.
+The signature verdict (PASS/FAIL in `signing.md`) is a **hard precondition** for all three runtime-environment skills. FAIL means they are not scheduled under **host-direct** (a bad signature on the host is a hard stop); under a VM they may proceed with the verdict recorded, since a bad signature in a disposable VM only costs a VM. Static analysis continues regardless.
 
 ## The READ vs MUTATING Classification (Defined Here, Consumed by Siblings)
 
@@ -37,7 +37,7 @@ This skill DEFINES the command classification that `macos-runtime-observation` a
 | **READ** | `get`, `count`, `exists`, and properties-of retrieval |
 | **MUTATING** (default) | **Any command that is unknown or ambiguous.** When in doubt, classify MUTATING. |
 
-The default matters: a misclassified READ that mutates user data is unrecoverable; a misclassified MUTATING that only reads costs one round of consent. Err toward MUTATING.
+The default matters: a misclassified READ that mutates user data is unrecoverable; a misclassified MUTATING that only reads just means the runtime skills sequence and bracket it as destructive work. Err toward MUTATING.
 
 ## Analysis Phases
 
@@ -51,7 +51,7 @@ digraph macos_bundle_analysis {
     "Phase 2: Info.plist contract extraction" [shape=box];
     "Phase 3: Signature and entitlement verification" [shape=box];
     "Signed and notarized?" [shape=diamond];
-    "STOP flag: consent-gated skills must not be scheduled" [shape=octagon, style=filled, fillcolor=red, fontcolor=white];
+    "STOP flag: runtime-environment skills not scheduled under host-direct (a VM may proceed with the verdict recorded)" [shape=octagon, style=filled, fillcolor=red, fontcolor=white];
     "Phase 4: Scripting dictionary extraction" [shape=box];
     "Phase 5: Strings catalog extraction" [shape=box];
     "Phase 6: Component inventory" [shape=box];
@@ -64,8 +64,8 @@ digraph macos_bundle_analysis {
     "Phase 2: Info.plist contract extraction" -> "Phase 3: Signature and entitlement verification";
     "Phase 3: Signature and entitlement verification" -> "Signed and notarized?";
     "Signed and notarized?" -> "Phase 4: Scripting dictionary extraction" [label="yes"];
-    "Signed and notarized?" -> "STOP flag: consent-gated skills must not be scheduled" [label="no"];
-    "STOP flag: consent-gated skills must not be scheduled" -> "Phase 4: Scripting dictionary extraction" [label="static analysis continues"];
+    "Signed and notarized?" -> "STOP flag: runtime-environment skills not scheduled under host-direct (a VM may proceed with the verdict recorded)" [label="no"];
+    "STOP flag: runtime-environment skills not scheduled under host-direct (a VM may proceed with the verdict recorded)" -> "Phase 4: Scripting dictionary extraction" [label="static analysis continues"];
     "Phase 4: Scripting dictionary extraction" -> "Phase 5: Strings catalog extraction";
     "Phase 5: Strings catalog extraction" -> "Phase 6: Component inventory";
     "Phase 6: Component inventory" -> "Phase 7: Capability synthesis and handoffs";
@@ -138,7 +138,7 @@ codesign --verify --deep --strict "$APP" 2>&1
 spctl -a -vv "$APP" 2>&1        # Gatekeeper assessment: notarized / Mac App Store / rejected
 ```
 
-`signing.md` records signing identity, team ID, hardened runtime flag, verification result, Gatekeeper source — and a **PASS/FAIL verdict on its own line, never omitted**. PASS requires `codesign --verify --deep --strict` success AND `spctl -a` acceptance. FAIL sets the STOP flag: consent-gated siblings are not scheduled, full stop. Static analysis continues regardless.
+`signing.md` records signing identity, team ID, hardened runtime flag, verification result, Gatekeeper source — and a **PASS/FAIL verdict on its own line, never omitted**. PASS requires `codesign --verify --deep --strict` success AND `spctl -a` acceptance. FAIL sets the STOP flag: the runtime-environment siblings are not scheduled under **host-direct** (a VM may proceed with the verdict recorded — a bad signature in a disposable VM costs a VM). Static analysis continues regardless.
 
 Read entitlements as behavioral claims (keys abbreviated; all under `com.apple.security.`):
 
@@ -258,11 +258,11 @@ Synthesize everything into a capability inventory. Record IDs are `CAP-NNN` (thr
 **Evidence:** sdef class "to do" with 14 readable properties
 **Ref:** workspace/raw/macos/bundle/scripting-dictionary.md:88
 **Mutation class:** READ
-**Verify via:** macos-runtime-observation (scripting-read scope)
+**Verify via:** macos-runtime-observation
 <!-- cite: source=machine-readable-contract, ref=workspace/raw/macos/bundle/scripting-dictionary.md:88, confidence=confirmed, agent=bundle-inspector -->
 ```
 
-Every CAP names the downstream mode that should verify it (`Verify via:`). **This table IS the dispatch input for the sibling skills** — the orchestrator schedules `macos-runtime-observation`, `macos-visual-exploration`, and `app-data-inspection` scopes directly from it. A capability without a `Verify via:` line is unfinished.
+Every CAP names the downstream mode that should verify it (`Verify via:`). **This table IS the dispatch input for the sibling skills** — the orchestrator schedules the runtime-environment skills (`macos-runtime-observation`, `macos-visual-exploration`, `app-data-inspection`) directly from it. A capability without a `Verify via:` line is unfinished.
 
 `binary-handoff.md` mirrors the binary-analysis handoff pattern (`workspace/raw/binary/source-handoff.md`): Mach-O paths (main executable plus each framework binary), architectures per binary, stripped status (`nm "$APP/Contents/MacOS/$EXEC" | head` — empty means stripped), and which strings categories Phase 5 already covered, so binary agents do not duplicate the `.strings` extraction.
 
@@ -272,7 +272,7 @@ Every CAP names the downstream mode that should verify it (`Verify via:`). **Thi
 |---------|----------|
 | `sdef` returns nothing | Record "no scripting API" as an explicit finding in `scripting-dictionary.md`; `macos-runtime-observation` skips its scripting phases |
 | Strings shipped only as `.loctable` | Dump with `plutil -p`; if unparseable, note the gap in `text-catalog.md` rather than leaving the section silently empty |
-| Unsigned or failed verification | Write FAIL verdict to `signing.md`, set the STOP flag for consent-gated skills; static analysis continues |
+| Unsigned or failed verification | Write FAIL verdict to `signing.md`, set the STOP flag (runtime-environment skills not scheduled under host-direct; a VM may proceed with the verdict recorded); static analysis continues |
 | `xmllint` chokes on sdef quirks (nonstandard entities, DTD fetch) | Fall back to `grep`/`grep -o` over the raw XML; note the degraded parse in output |
 | Bundle not installed in `/Applications` | Analyze in place; note that runtime modes need an installed, launchable copy |
 
@@ -332,7 +332,7 @@ workspace/public/contracts/
 1. **Never execute the target** or any binary in the bundle — no launching, no `open`, no running bundled helper tools. Analysis tools (`plutil`, `sdef`, `codesign`, `otool`) read the bundle; nothing in the bundle ever runs.
 2. **Read-only file access** to the bundle. Never write into, modify, or re-sign it.
 3. **Everything is RAW** except the three `workspace/public/contracts/` summaries (machine-readable vendor declarations only). Strings catalogs, inventories, and notes never leave `workspace/raw/`.
-4. **Do not `defaults read` or touch app data** — containers, preferences, and databases are `app-data-inspection`'s job, behind its consent gate. This skill reports WHERE data lives (from entitlements), never what is in it.
+4. **Do not `defaults read` or touch app data** — containers, preferences, and databases are `app-data-inspection`'s job, in the runtime environment. This skill reports WHERE data lives (from entitlements), never what is in it.
 5. **Record absences explicitly** — "no sdef", "no Sparkle", "no URL schemes" are findings. Silence is indistinguishable from not having looked.
 6. **Cite as you go** — every behavioral claim gets an inline `<!-- cite: -->` immediately after the claim, per provenance-methodology.
 
@@ -346,6 +346,19 @@ workspace/public/contracts/
 - [ ] Hidden sdef entries (`hidden="yes"`, underscore-prefixed) flagged with `confidence=inferred` and "verify at runtime"
 - [ ] Gaps section lists what static analysis could NOT determine and which mode fills each gap
 
+## Executed-Binary Fidelity
+
+This skill analyzes the **host** bundle. That analysis is authoritative when the runtime environment executes that same binary — copy-acquisition, where the environment runs identical bytes to the host build.
+
+When the environment executes a **different** binary — vendor-download acquisition (e.g. the host carries a Mac App Store build but the VM runs the direct-download trial), or a `CFBundleShortVersionString`/signing-authority mismatch that the `macos-vm-execution` skill detects — this skill is RE-RUN in the environment (via `gf_exec`) against the actually-executed artifact. The two analyses are diffed into `workspace/raw/macos/bundle/environment-diff.md`. Focus the diff on what genuinely differs between distribution channels:
+
+- **Code-signature authority** — Apple/MAS vs Developer ID
+- **`_MASReceipt` presence** — Mac App Store distribution marker
+- **Entitlements** — sandbox and capability differences between channels
+- **Update mechanism** — Sparkle `SUFeedURL` vs Mac App Store
+
+The sdef and URL schemes are typically identical across channels; do not pad the diff with them. When an in-environment analysis exists, it — not the host analysis — is the authoritative static evidence the runtime and app-data skills correlate against.
+
 ## Pipeline Position
 
-The cheapest, safest macOS mode; always runs first. No consent, no permissions, no running app — yet it produces the dispatch table (capability inventory), the safety classification (READ/MUTATING), and the go/no-go signal (signature verdict) that every other macOS mode depends on.
+The cheapest, safest macOS mode; always runs first, host-side, before any runtime environment exists. No permissions, no running app — yet it produces the dispatch table (capability inventory), the safety classification (READ/MUTATING), and the go/no-go signal (signature verdict) that every other macOS mode depends on.

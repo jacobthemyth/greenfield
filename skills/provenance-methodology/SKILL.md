@@ -56,9 +56,9 @@ Inline HTML comment, immediately after the claim:
 | 5 | `test-suite` | Behavioral claims extracted from the target's own test assertions | RAW |
 | 6 | `bundle-analysis` | App-bundle resources read verbatim: .strings/.stringsdict catalogs, resource/framework/extension inventories | RAW |
 | 7 | `community-knowledge` | Stack Overflow, blog posts, conference talks, third-party tutorials | PUBLIC |
-| 8 | `runtime-observation` | Behavior observed by running/querying the product, including consent-gated AppleScript/JXA queries against a live host app | RAW |
+| 8 | `runtime-observation` | Behavior observed by running/querying the product, including AppleScript/JXA queries against a live app in the analysis runtime environment | RAW |
 | 9 | `visual-observation` | Screenshots, accessibility-tree dumps, menu inventories of the running UI | RAW |
-| 10 | `app-data-observation` | Read-only reads of the app's own data stores (SQLite ro, defaults). Cite schema and semantics only — never quote user content | RAW |
+| 10 | `app-data-observation` | Reads of the app's own data stores (SQLite, defaults) in the runtime environment | RAW |
 | 11 | `source-code` | Proprietary source code, bundles, minified JS | RAW |
 | 12 | `binary-analysis` | Disassembly, decompilation, binary instrumentation | RAW |
 | 13 | `inferred` | Reasoning, convention, analogy. No direct observation. | N/A |

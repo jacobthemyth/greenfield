@@ -28,6 +28,8 @@ claude
 
 Target shape doesn't matter. Greenfield has been used on single-file minified JavaScript bundles and on source-tree projects; the pipeline also has a path for decompiled native binaries. The methodology adapts to what's there.
 
+macOS app analysis runs in a disposable environment — a Tart or Lume VM, or a throwaway account — chosen at dispatch time, so no personal data enters the analysis.
+
 Workspace output:
 
 ```

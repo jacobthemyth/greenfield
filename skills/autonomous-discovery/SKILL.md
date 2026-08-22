@@ -311,7 +311,7 @@ find "$TARGET_PATH" -maxdepth 3 -type d -name "*.app" 2>/dev/null | \
   done
 ```
 
-All checks in this phase are **passive**. Never launch the app. Never read its data containers — probing `~/Library/Group Containers` fires TCC permission prompts. All active probing is deferred to the post-consent preflight doctor in the orchestrator.
+All checks in this phase are **passive**. Never launch the app. Never read its data containers — probing `~/Library/Group Containers` fires TCC permission prompts. All active probing is deferred to the Runtime Environment Gate's preflight doctor, which runs inside the chosen environment.
 
 ```bash
 # Bundle identity
@@ -334,8 +334,9 @@ Record:
 - **Signed/notarized verdict** from `codesign` / `spctl`.
 - **URL schemes (CFBundleURLTypes)** — registered scheme entries from `Info.plist`.
 - **Main executable path** — note `Contents/MacOS/<exe>` as the input path for the existing `binary` source type.
-- **Conventional data locations** — derived from entitlement group-container IDs (`codesign -d --entitlements -` output) WITHOUT touching them.
-- **Required TCC permissions** — which permissions each consent-gated source type will require: `macos-runtime` requires Automation (Apple Events) for the applescript-explorer plus Accessibility and Screen Recording for the ui-observer; `app-data` may require Full Disk Access for Group Containers.
+- **Conventional data locations** — derived from entitlement group-container IDs (`codesign -d --entitlements -` output). These are the IN-ENVIRONMENT targets for the app-data source type, resolved and read inside the runtime environment — never read on the host.
+- **Runtime-environment inputs** — which permissions the chosen environment must provision: Automation (Apple Events) for scripting; Accessibility plus Screen Recording for UI observation; Full Disk Access for Group Containers.
+- **Target-acquisition inputs** — the installed bundle path and size (for `gf_put` into the environment); the vendor download URL when the target came from a URL or `Info.plist` advertises one; and whether the app appears to need sign-in or licensing — a note for the VM trial path.
 
 ---
 
@@ -477,6 +478,33 @@ docker compose version >/dev/null 2>&1 && echo "Docker Compose: available" || ec
 
 Record: container runtime available (docker/podman/none), existing containers related to the target, whether docker-compose.yml or similar exists.
 
+### 3.5 macOS Runtime Environment Availability
+
+```bash
+# Architecture — Apple silicon is required for the VM paths
+uname -m  # arm64 required
+
+# Tart
+command -v tart >/dev/null 2>&1 && tart --version || echo "tart: not available"
+
+# Lume
+command -v lume >/dev/null 2>&1 && lume --version || echo "lume: not available"
+
+# Lume API endpoint (guard on the binary so a lume-less host records cleanly)
+command -v lume >/dev/null 2>&1 && curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3000/lume/vms || echo "lume: absent"
+
+# Cached base images and running guests
+tart list 2>/dev/null
+
+# Free disk in the home volume — need ~60 GB for a VM clone
+df -g "$HOME" | tail -1
+
+# Host macOS version
+sw_vers -productVersion
+```
+
+Record: architecture (arm64 or not), tart/lume availability and versions, cached base images (so the gate knows whether a multi-GB pull is needed), running-guest count against the 2-guest ceiling, and free disk. **Do not create, boot, or modify any VM during discovery — discovery reports, the gate provisions.**
+
 ---
 
 ## Phase 4: Derived Source Assessment
@@ -596,8 +624,8 @@ After all four phases complete, write the inventory to `workspace/inventory.md`.
 | URL schemes | example:// |
 | Main executable | /Applications/Example.app/Contents/MacOS/Example |
 | Conventional data locations | ~/Library/Group Containers/ABC123.com.example/ (not probed) |
-| Permissions required — macos-runtime | Automation (Apple Events) — applescript-explorer; Accessibility, Screen Recording — ui-observer |
-| Permissions required — app-data | Full Disk Access may be required for Group Containers |
+| Target acquisition | copy installed bundle (<size>) / vendor download <url> |
+| Permissions to provision | Automation, Accessibility, Screen Recording, Full Disk Access |
 
 ## Test Suites
 
@@ -667,6 +695,14 @@ After all four phases complete, write the inventory to `workspace/inventory.md`.
 |---------|-----------|-------------------|
 | Docker | Yes | app (running), db (running) |
 | Docker Compose | Yes | docker-compose.yml with 3 services |
+
+## macOS Runtime Environments
+
+| Environment | Available | Notes |
+|-------------|-----------|-------|
+| vm-tart | Yes | base image cached, 0/2 guests running |
+| vm-lume | No | binary not installed |
+| host-direct | Yes | requires disposable-account affirmation at the gate |
 
 ## Derived Sources (Can Be Created)
 
@@ -741,8 +777,8 @@ After the inventory is finalized (including user feedback), write a dispatch map
 | Binaries (managed) | binary-surveyor → source-analysis handoff | binary-analysis | P2 | lib/*.jar |
 | Binaries (native) | binary-surveyor, binary-deep-analyzer | binary-analysis | P3 | bin/ |
 | macOS bundle (static) | bundle-inspector | macos-bundle-analysis | P0 | path to .app |
-| macOS host runtime | applescript-explorer, ui-observer | macos-runtime-observation, macos-visual-exploration | P1 | host (consent-gated) |
-| App data stores | data-inspector | app-data-inspection | P1 | group container / defaults domain (consent-gated) |
+| macOS runtime environment | applescript-explorer, ui-observer | macos-runtime-observation, macos-visual-exploration | P1 | runtime environment (vm-tart \| vm-lume \| host-direct) |
+| App data stores | data-inspector | app-data-inspection | P1 | group container / defaults domain, in the runtime environment |
 | macOS main executable | binary-surveyor, binary-deep-analyzer | binary-analysis | P2 | Contents/MacOS/<exe> |
 | OpenAPI spec | doc-researcher | doc-research | P0 | api/openapi.yaml |
 | GraphQL schema | doc-researcher | doc-research | P0 | schema.graphql |
