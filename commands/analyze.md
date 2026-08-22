@@ -3,12 +3,12 @@ name: analyze
 description: Reverse engineer a codebase into the output behavioral specs with provenance
 arguments:
   - name: path
-    description: Path to the target (source code, bundle, binary, or installed software)
+    description: Path to the target (source code, bundle, binary, or installed software) or an https:// product URL
     required: true
   - name: --exclude
     description: >
       Comma-separated list of source types to exclude from analysis.
-      Valid types: source, docs, sdk, community, runtime, binary, git-history, tests, visual, contracts.
+      Valid types: source, docs, sdk, community, runtime, binary, git-history, tests, visual, contracts, macos-bundle, macos-runtime, app-data.
       By default, all available sources are analyzed.
     required: false
     default: (none)
@@ -64,6 +64,9 @@ Agents MUST use the Read tool on every source file. Head/tail samples are not en
 /analyze path                              # Discover and consume everything available
 /analyze path --exclude source             # Black-box analysis (skip source code)
 /analyze path --exclude git-history,tests  # Skip git mining and test suite analysis
+/analyze /Applications/Foo.app             # Native macOS app (static + consent-gated host observation)
+/analyze https://example.com/product       # URL target (discovery resolves to installed app, if any)
+/analyze path --exclude macos-runtime,app-data  # Static-only macOS analysis (skips the consent gate entirely)
 ```
 
 ## EXIT CODES
@@ -112,6 +115,15 @@ workspace/
 │   │   ├── survey/          # Initial triage output
 │   │   └── analysis/        # Deep analysis output
 │   │
+│   ├── macos/               # Native macOS app analysis artifacts
+│   │   ├── bundle/          # Static bundle analysis: Info.plist, entitlements, sdef, strings catalogs
+│   │   ├── runtime/         # Consent-gated host observation: OBS records, scripting dumps, screenshots + AX sidecars
+│   │   │   ├── observations/
+│   │   │   ├── scripting/
+│   │   │   ├── screenshots/
+│   │   │   └── flows/       # Interaction flow captures: step-NN screenshots + AX sidecars + flow.md
+│   │   └── app-data/        # Consent-gated read-only data stores: schema, defaults, DBQ records
+│   │
 │   ├── project-history/     # Git archaeology findings
 │   │
 │   ├── test-evidence/       # Test suite analysis output
@@ -133,6 +145,8 @@ workspace/
 │   │   └── validation/      # Acceptance criteria
 │   │
 │   └── audit/               # Detailed per-finding audit reports from Layers 6 and 7
+│
+├── consent/                 # Host-observation consent artifact
 │
 ├── output/                   # Sanitized specs for the implementer
 │   ├── specs/
@@ -191,11 +205,21 @@ Layer 7: Fidelity Check     → analyzer × N (cross-validate raw vs output for 
 Validate all arguments before any work begins.
 
 ```bash
-# Validate path exists
-[ -d "$ARGUMENTS" ] || [ -f "$ARGUMENTS" ] || { echo "ERROR: Target path does not exist: $ARGUMENTS"; exit 2; }
+# Validate target: a filesystem path (a .app bundle is a directory — it passes the -d check)
+# or an http(s):// product URL
+case "$ARGUMENTS" in
+  http://*|https://*)
+    TARGET_KIND=url   # discovery resolves URL → product → installed app (if any)
+    ;;
+  *)
+    [ -d "$ARGUMENTS" ] || [ -f "$ARGUMENTS" ] || { echo "ERROR: Target path does not exist: $ARGUMENTS"; exit 2; }
+    TARGET_KIND=path
+    ;;
+esac
 
 # Validate --exclude (if provided)
-# Valid values: source, docs, sdk, community, runtime, binary, git-history, tests, visual, contracts
+# Valid values: source, docs, sdk, community, runtime, binary, git-history, tests, visual, contracts,
+#               macos-bundle, macos-runtime, app-data
 # Reject unknown type names immediately with exit code 2
 
 # Validate --container-runtime (if provided)
@@ -249,6 +273,7 @@ mkdir -p raw/runtime/cli raw/runtime/web raw/runtime/behaviors raw/runtime/ux-fl
 mkdir -p raw/runtime/visual/screenshots raw/runtime/visual/flows
 mkdir -p raw/binary/survey raw/binary/analysis
 mkdir -p raw/project-history
+mkdir -p raw/macos/bundle raw/macos/runtime/observations raw/macos/runtime/scripting raw/macos/runtime/screenshots raw/macos/runtime/flows raw/macos/app-data consent
 mkdir -p raw/test-evidence
 mkdir -p raw/synthesis/features raw/synthesis/architecture raw/synthesis/api
 mkdir -p raw/specs/modules raw/specs/journeys raw/specs/contracts raw/specs/protocols raw/specs/ui raw/specs/tests raw/specs/test-vectors raw/specs/validation
@@ -259,7 +284,9 @@ mkdir -p provenance/sessions
 find . -type d -empty -not -path './.git/*' -exec touch {}/.gitkeep \;
 
 # Write workspace.json with initial values
-# (version, target, excluded_types, created_at, updated_at, current_layer: 1, gates_passed: [], agent_runs: [])
+# (version, target, target_kind: path|url, resolved_app_path: <path>|null,
+#  host_observation_consent: {scopes_granted, scopes_declined, decided_at}|null,
+#  excluded_types, created_at, updated_at, current_layer: 1, gates_passed: [], agent_runs: [])
 
 # Write .gitignore (container build artifacts, large binaries, temp files, OS/editor artifacts, node_modules)
 
@@ -277,7 +304,7 @@ Instead of relying on user-specified modes, Layer 1 begins with autonomous disco
 ### 2a: Dispatch discovery agent
 
 Dispatch `greenfield:analyzer`:
-- Prompt: "Role: discovery-agent. Follow the **autonomous-discovery skill**. Target: `<target-path>`. Workspace: `<workspace-path>`. Excluded types: `<--exclude value or 'none'>`. Probe the target for all available intelligence sources: source code, documentation, SDK/package presence, community content, runtime executability, binary artifacts, git history, test suites, visual UI, and machine-readable contracts. Write an inventory to `workspace/inventory.md` listing each source type, its availability (available/unavailable/excluded), and a brief rationale."
+- Prompt: "Role: discovery-agent. Follow the **autonomous-discovery skill**. Target: `<target-path>`. Workspace: `<workspace-path>`. Excluded types: `<--exclude value or 'none'>`. Probe the target for all available intelligence sources: source code, documentation, SDK/package presence, community content, runtime executability, binary artifacts, git history, test suites, visual UI, machine-readable contracts, macOS app bundles (static bundle facts), host-observable macOS runtime, and application data stores. If the target is a macOS `.app` bundle (or a URL that resolves to an installed app via Spotlight), additionally probe per the autonomous-discovery skill Phase 1.8: bundle facts, code signature, scripting dictionary presence, and conventional data locations — passive checks only, never launch the app or read its data containers. Write an inventory to `workspace/inventory.md` listing each source type, its availability (available/unavailable/excluded), and a brief rationale."
 - Commit: `[L1:discovery] Intelligence source inventory`
 
 ### 2b: Present inventory for negotiation
@@ -314,6 +341,11 @@ Pre-flight dispatch count (Layers 1–4, before sanitization decision point):
         tests        1–2 agents
         visual       1 agent
         contracts    1 agent
+        macos-bundle 1 agent (bundle-inspector)
+        macos-runtime 2 agents (applescript-explorer, ui-observer) —
+                     pending host-observation consent gate
+        app-data     1 agent (data-inspector) — pending
+                     host-observation consent gate
   Layer 2 (Synthesis):       5 agents
   Layer 3 (Deep docs):       1 deep-dive per module (module count known
                              after Layer 2) + 3 cross-cutting roles
@@ -387,9 +419,9 @@ Session capture is best-effort. If the JSONL file cannot be found, log a warning
 
 ## Layer 1: Intelligence Gathering
 
-Dispatch agents for each approved source type from the negotiated inventory. Sources are independent — dispatch all approved sources in parallel where possible.
+Dispatch agents for each approved source type from the negotiated inventory. Sources are independent — dispatch all approved sources in parallel where possible. Exceptions: `macos-bundle` must complete before the Host Observation Consent Gate (the gate reads its signature verdict); `macos-runtime` and `app-data` run only after that gate grants their scopes, and the two `macos-runtime` agents run sequentially, never in a parallel batch with any other agent that drives the host UI.
 
-Read `workspace/inventory.md` to determine which source types are approved. For each approved source type, dispatch the corresponding agent(s) below. Skip any source type marked as excluded or unavailable.
+Read `workspace/inventory.md` to determine which source types are approved. For each approved source type, dispatch the corresponding agent(s) below. Skip any source type marked as excluded or unavailable (consent-declined types are marked excluded by the consent gate and are skipped identically).
 
 ### Source: source (Source Code Analysis)
 
@@ -508,6 +540,118 @@ Dispatch `greenfield:analyzer`:
 - Prompt: "Role: contract-parser. Follow the **contract-detection skill**. Target: `<target-path>`. Workspace: `<workspace-path>`. Parse machine-readable contract definitions: OpenAPI/Swagger specs, JSON Schema files, Protocol Buffer definitions, GraphQL schemas, WSDL files, AsyncAPI specs. Extract behavioral constraints and interface contracts. Write findings to `workspace/public/contracts/`."
 - Commit: `[L1:contract-parser] Parse machine-readable contract definitions`
 
+### Source: macos-bundle (Static Bundle Analysis)
+
+No consent required — static, read-only, the app is never launched.
+
+Dispatch `greenfield:analyzer`:
+- Prompt: "Role: bundle-inspector. Follow the **macos-bundle-analysis skill**. Target bundle: `<app-path>`. Workspace: `<workspace-path>`. Statically analyze the application bundle without launching it: Info.plist contracts (bundle identifier, version, URL schemes, document types, UTIs, services), code signature and entitlements, the AppleScript dictionary (sdef) with every command classified READ or MUTATING, localized strings catalogs, embedded frameworks/extensions/XPC services. Read-only — never launch or modify the app. Write raw findings to `workspace/raw/macos/bundle/` and contract summaries to `workspace/public/contracts/macos-plist-contracts.md`, `macos-sdef.md`, `macos-entitlements.md`. Every claim carries a provenance citation (source=machine-readable-contract for plist/sdef/entitlement declarations; source=bundle-analysis for strings/resource inventories)."
+- Commit: `[L1:bundle-inspector] Static bundle analysis: Info.plist, entitlements, sdef, strings`
+
+Note: the bundle's main executable (`Contents/MacOS/<exe>`) is covered by the existing `binary` source type via `workspace/raw/macos/bundle/binary-handoff.md`.
+
+### Host Observation Consent Gate (macos-runtime, app-data)
+
+This gate runs in the ORCHESTRATOR — subagents cannot AskUserQuestion. It fires only if the negotiated inventory approved `macos-runtime` and/or `app-data`. If both were excluded (e.g. `--exclude macos-runtime,app-data`, or the user excluded them during inventory negotiation), skip this gate entirely — no consent question, no preflight.
+
+**Step 1: Signature check.** Read the verdict from `workspace/raw/macos/bundle/signing.md`. If the verdict is FAIL or the app is unsigned: refuse host observation outright, mark both `macos-runtime` and `app-data` as `excluded (unsigned target)` in `workspace/inventory.md`, and skip to the Layer 1 Gate Check. If `signing.md` does not exist (e.g. `--exclude macos-bundle` was passed, or the bundle-inspector produced no output), treat it exactly as FAIL: refuse host observation, mark the gated types `excluded (no signature verdict)`, and skip to the Layer 1 Gate Check — a signature verdict is a hard precondition and is never re-derived at the gate.
+
+**Step 2: Ask for consent.** Use the **AskUserQuestion** tool, disclosing:
+- The app at `<app-path>` will be launched and driven on this Mac (AppleScript/JXA queries + accessibility-driven UI navigation) — the only exception to the containers-only rule.
+- Signature status (from `workspace/raw/macos/bundle/signing.md`).
+- Read-only guarantees: scripting is limited to query/get verbs; UI driving is navigation and inspection only — destructive or data-mutating actions are never activated; SQLite is opened only read-only; nothing is written into the app's containers.
+- Permissions that may be requested: Automation, Accessibility, Screen Recording — granted to the terminal app in System Settings; they cannot be granted from the CLI.
+- app-data reads `~/Library/Group Containers/...` personal data — schema and minimal illustrative values may appear in workspace artifacts.
+- Even under Drive-only scopes, workspace artifacts will contain the user's real content — scripting property dumps include actual item titles/names, and screenshots capture whatever real data is on screen. These artifacts stay in the analysis workspace and are subject to Layer 5 sanitization before any output specs.
+
+Options: **Full** (drive + data) / **Drive only** / **Data only** / **None (static-only)**.
+
+**Step 3: Record the decision.** Map the choice to scopes:
+- Full → app-launch, scripting-read, visual, app-data-read
+- Drive only → app-launch, scripting-read, visual
+- Data only → app-data-read
+- None → none
+
+Write `workspace/consent/macos-host-observation.md`:
+
+```markdown
+# Host Observation Consent
+- **Target:** <app name>
+- **Bundle ID:** <bundle-id>
+- **Signature check:** passed (see workspace/raw/macos/bundle/signing.md)
+- **Granted scopes:** <comma-separated scopes>
+- **Optional tools approved:** none
+- **Granted:** <ISO timestamp> by user
+```
+
+Record the decision in workspace.json `host_observation_consent`. Declined scopes are recorded in `workspace/inventory.md` as `excluded (consent declined)` — mechanically identical to `--exclude`.
+
+Commit: `[L1:consent] Host observation consent: <scopes>`
+
+**Step 4: Preflight doctor.** Runs AFTER consent — the probes themselves trigger TCC prompts. Inline bash probing each granted capability:
+
+```bash
+# Record whether the app is already running BEFORE the Automation probe —
+# the `get name` probe launches the app if it isn't. If the probe launches it,
+# record launched_by_pipeline: true in the capability matrix so the runtime
+# agents' cleanup quits it.
+pgrep -x "$APP_PROCESS_NAME"
+
+# Automation: error -1743 = denied, -1728 = app in another login session
+osascript -e "tell application id \"$BUNDLE_ID\" to get name"
+
+# Accessibility
+osascript -e 'tell application "System Events" to return UI elements enabled'
+
+# Screen Recording: activate app → capture → hide app → capture again;
+# near-identical file sizes = silent wallpaper-only failure
+# Capture the name of the previously frontmost app first so it can be restored.
+PREV_FRONT=$(osascript -e 'tell application "System Events" to get name of first process whose frontmost is true')
+screencapture -x "$SCRATCH/probe-1.png"   # with app frontmost
+screencapture -x "$SCRATCH/probe-2.png"   # with app hidden
+# Restore visibility and focus after the comparison probe
+osascript -e "tell application \"System Events\" to set visible of process \"$APP_PROCESS_NAME\" to true"
+osascript -e "tell application \"$PREV_FRONT\" to activate"
+
+# app-data readability
+ls "$HOME/Library/Group Containers/<group-id>/"
+sqlite3 "file:<db-path>?mode=ro" "PRAGMA schema_version;"
+```
+
+Produce a capability matrix (granted | missing per capability) and append it as `## Host Observation Preflight` to `workspace/inventory.md`.
+
+For each missing capability, AskUserQuestion with options: `[I granted it in System Settings — re-check]` / `[Skip this capability]` / `[Cancel host observation]`. Maximum 3 re-check rounds, then auto-degrade. Degradation matrix:
+- No Automation → drop applescript-explorer
+- No Accessibility → ui-observer degrades to screenshots-only (no menu traversal or AX sidecars, per macos-visual-exploration's degradation modes); drop ui-observer entirely only when BOTH Accessibility and Screen Recording are missing
+- No Screen Recording → ui-observer runs AX-only (no screenshots)
+- Container access denied → data-inspector proceeds defaults-only if the preference domain is readable, else exclude app-data
+
+Commit: `[L1:preflight] Host observation preflight doctor`
+
+### Source: macos-runtime (Consent-Gated Host Observation)
+
+Requires consent scopes app-launch + scripting-read (Step 1) / app-launch + visual (Step 2), and the doctor's capability rows.
+
+**HOST-OBSERVATION EXCEPTION:** these agents run against the user's installed app on the host — the only permitted exception to the container rule. Dispatch SEQUENTIALLY, never in the same parallel batch (two agents cannot share the host GUI), and never in a batch with any other agent that drives the UI.
+
+**Per-action consent relay:** subagents cannot use AskUserQuestion. Any per-action consent defined by the skills (Tier B user-performed mutation probes, the appearance/dark-mode toggle) is handled by relay: the dispatched agent records the precise request(s) in its final report and treats any consent not explicitly granted in its dispatch prompt as NOT granted; the orchestrator relays each request to the user via AskUserQuestion and, if granted, re-dispatches the agent with the grant and the user's confirmation of the performed action. If the user declines, the orchestrator re-dispatches with "declined" so the agent records the gap.
+
+**Step 1: applescript-explorer** → `greenfield:analyzer`:
+- Prompt: "Role: applescript-explorer. Follow the **macos-runtime-observation skill**. Target app: `<app-name>` (bundle id `<bundle-id>`, path `<app-path>`). Workspace: `<workspace-path>`. Consent scopes: `<scopes>`. Preflight capability matrix: `<matrix>`. Using the capability inventory and sdef classification in `workspace/raw/macos/bundle/`, query live application state via osascript/JXA: enumerate scriptable classes, read live object graphs, map the object model to user-visible concepts. READ-ONLY: query/get verbs only — never create, set, delete, or move application objects; never open the app's URL scheme. Record OBS-NNN records with provenance citations (source=runtime-observation). Write to `workspace/raw/macos/runtime/observations/` and `scripting/`."
+- Commit: `[L1:applescript-explorer] Query live object model via scripting interface`
+
+**Step 2: ui-observer** (after Step 1 completes) → `greenfield:analyzer`:
+- Prompt: "Role: ui-observer. Follow the **macos-visual-exploration skill**. Target app: `<app-name>` (`<app-path>`). Workspace: `<workspace-path>`. Consent scopes: `<scopes>`. Preflight capability matrix: `<matrix>`. Run the preflight doctor phase, then explore via System Events accessibility scripting: enumerate windows, the full menu bar (every item with keyboard shortcut, enabled state, and mutation class), and navigate the primary screens. If Screen Recording is granted, capture each distinct UI state with screencapture to `workspace/raw/macos/runtime/screenshots/` with an .ax.md accessibility sidecar per capture; otherwise document from the accessibility tree alone. NEVER activate destructive or data-mutating items — navigation and inspection only. Write command-surface.md, window-inventory.md, flows, and a screenshot manifest under `workspace/raw/macos/runtime/` (source=visual-observation)."
+- Commit: `[L1:ui-observer] Observe UI structure, menus, and screens on host`
+
+### Source: app-data (Read-Only App Data Inspection)
+
+Requires consent scope app-data-read and the doctor's data-access capability.
+
+Dispatch `greenfield:analyzer`:
+- Prompt: "Role: data-inspector. Follow the **app-data-inspection skill**. Target bundle id: `<bundle-id>`. Data locations (from inventory/entitlements): `<paths>`. Workspace: `<workspace-path>`. Locate the app's data stores (group containers, Application Support, defaults domain). Open SQLite STRICTLY read-only via `sqlite3 \"file:<path>?mode=ro\"` — SELECT/PRAGMA only. Extract full schema, infer entities/lifecycles/relationships, sample only structural values (type codes, status flags) — NEVER copy the user's personal content beyond minimal illustrative values. Read preferences via `defaults read`. Record DBQ-NNN records with provenance citations (source=app-data-observation). Write to `workspace/raw/macos/app-data/`."
+- Commit: `[L1:data-inspector] Read-only data store schema and lifecycle inference`
+
 ### Layer 1 Gate Check (ENFORCED)
 
 Verify each approved source type from the inventory produced output.
@@ -522,7 +666,7 @@ check_output() {
   local source_type="$1"
   local output_dir="$2"
   local file_count
-  file_count=$(find "$output_dir" -name '*.md' -o -name '*.json' -o -name '*.js' 2>/dev/null | wc -l | tr -d ' ')
+  file_count=$(find "$output_dir" -type f ! -name '.gitkeep' 2>/dev/null | wc -l | tr -d ' ')
   if [ "$file_count" -eq 0 ]; then
     echo "LAYER 1 GATE FAILED: $source_type produced 0 files in $output_dir"
     GATE_FAIL=1
@@ -542,6 +686,12 @@ check_output() {
 # tests     → workspace/raw/test-evidence/
 # visual    → workspace/raw/runtime/visual/
 # contracts → workspace/public/contracts/
+# macos-bundle  → workspace/raw/macos/bundle/
+# macos-runtime → workspace/raw/macos/runtime/
+# app-data      → workspace/raw/macos/app-data/
+
+# Consent-declined types are excluded types: "for each approved source type"
+# already skips anything marked excluded (consent declined) in inventory.md.
 
 if [ "$GATE_FAIL" -eq 1 ]; then
   echo "STOP: Layer 1 gate failed. Re-dispatch failed source agents before proceeding."
@@ -561,7 +711,7 @@ Combine raw intelligence from all Layer 1 modes into a unified structural unders
 Dispatch all three in parallel:
 
 **feature-discoverer** → `greenfield:analyzer`:
-- Prompt: "Role: feature-discoverer. Follow the **multi-source-synthesis skill** Section 1 (Feature Discovery). Workspace: `<workspace-path>`. Read all Layer 1 output from `workspace/raw/source/`, `workspace/public/` (including `public/community/` if it exists), `workspace/raw/runtime/`, `workspace/raw/binary/` (whichever exist). Aggregate a feature inventory. Write to `workspace/raw/synthesis/features/`."
+- Prompt: "Role: feature-discoverer. Follow the **multi-source-synthesis skill** Section 1 (Feature Discovery). Workspace: `<workspace-path>`. Read all Layer 1 output from `workspace/raw/source/`, `workspace/public/` (including `public/community/` if it exists), `workspace/raw/runtime/`, `workspace/raw/binary/`, `workspace/raw/macos/` (whichever exist). Aggregate a feature inventory. Write to `workspace/raw/synthesis/features/`."
 - Commit: `[L2:feature-discoverer] Aggregate feature inventory from N intelligence sources`
 
 **architecture-analyst** → `greenfield:analyzer`:
@@ -678,7 +828,7 @@ Pick the journey categories that actually apply to the target; not every target 
 ### Phase 3d: External interfaces
 
 Dispatch `greenfield:analyzer`:
-- Prompt: "Role: contract-extractor. Follow the **behavioral-spec-writing skill** "Contract Extraction" section for external contract format, BIR table format, external system contract templates, and analysis/implementation boundary rules. Workspace: `<workspace-path>`. Read module specs in `workspace/raw/specs/modules/` and all Layer 1 output. Extract all external interfaces (CLI, env vars, config) and wire protocols (API, gRPC, LSP). **Also identify external systems the target depends on but does not own** — shared databases, third-party APIs, external CLI tools, imposed file formats. For each, produce a dedicated external system contract using the templates in the skill (database.md, api-{service}.md, cli-{tool}.md, format-{name}.md). The test: can the reimplementor redesign this interface? If NO, it needs an external system contract. Extract inter-module integration contracts (analysis internal only — stays in raw/). Extract behavioral integration requirements (BIR table — flows through to output/). Write contracts to `workspace/raw/specs/contracts/` and protocols to `workspace/raw/specs/protocols/`."
+- Prompt: "Role: contract-extractor. Follow the **behavioral-spec-writing skill** "Contract Extraction" section for external contract format, BIR table format, external system contract templates, and analysis/implementation boundary rules. Workspace: `<workspace-path>`. Read module specs in `workspace/raw/specs/modules/` and all Layer 1 output. Extract all external interfaces (CLI, env vars, config) and wire protocols (API, gRPC, LSP). **Also identify external systems the target depends on but does not own** — shared databases, third-party APIs, external CLI tools, imposed file formats. For each, produce a dedicated external system contract using the templates in the skill (database.md, api-{service}.md, cli-{tool}.md, format-{name}.md, platform-{os}.md). The test: can the reimplementor redesign this interface? If NO, it needs an external system contract. Extract inter-module integration contracts (analysis internal only — stays in raw/). Extract behavioral integration requirements (BIR table — flows through to output/). Write contracts to `workspace/raw/specs/contracts/` and protocols to `workspace/raw/specs/protocols/`."
 - Commit: `[L3:contract-extractor] Extract external interfaces, wire protocols, external system contracts, and behavioral integration requirements`
 
 Documents:
@@ -690,6 +840,7 @@ Documents:
 - External API contracts -> `workspace/raw/specs/contracts/api-{service}.md`
 - External CLI tool contracts -> `workspace/raw/specs/contracts/cli-{tool}.md`
 - External file format contracts -> `workspace/raw/specs/contracts/format-{name}.md`
+- Platform contracts (URL scheme commands and parameters, document types & UTIs, scripting dictionary, Services entries, externally-consumed preference keys — per the Platform Contract template in the behavioral-spec-writing skill) -> `workspace/raw/specs/contracts/platform-{os}.md`
 
 ### Layer 3 Gate Check (ENFORCED)
 
@@ -795,7 +946,7 @@ Follow the **source-completeness skill** for the full methodology.
 ### Dispatch
 
 Dispatch `greenfield:analyzer`:
-- Prompt: "Role: source-completeness-checker. Follow the **source-completeness skill**. Workspace: `<workspace-path>`. Run all 7 checks (tools, env vars, CLI flags, subcommands, dispatched events, config keys, error categories) by grepping the source at `<target-path>` and diffing against the specs in `workspace/raw/specs/`. Write report to `workspace/raw/audit/source-to-spec-completeness.md`."
+- Prompt: "Role: source-completeness-checker. Follow the **source-completeness skill**. Workspace: `<workspace-path>`. Run all APPLICABLE checks per the skill: code-grep Checks 1-7 (tools, env vars, CLI flags, subcommands, dispatched events, config keys, error categories) by grepping the source at `<target-path>` when a source tree exists, and evidence-diff Checks M1-M6 when `workspace/raw/macos/bundle/` exists — in both cases diffing against the specs in `workspace/raw/specs/`. Report each check PASS | FAIL | NOT-APPLICABLE; a check whose extraction surface doesn't exist reports NOT-APPLICABLE, and the gate fails if all checks are NOT-APPLICABLE. Write report to `workspace/raw/audit/source-to-spec-completeness.md`."
 - Commit: `[gate-1b:source-completeness] Source-to-spec completeness check - PASS|FAIL`
 
 ### Gate Check
@@ -1032,7 +1183,7 @@ For each domain group, dispatch `greenfield:sanitizer`:
 
 Similarly dispatch sanitizers for:
 - External contracts (cli, environment, configuration, behavioral-integration) → `output/specs/contracts/`
-- **External system contracts** (database, api-{service}, cli-{tool}, format-{name}) → `output/specs/contracts/` — these document systems the app doesn't own. **Pass through with details intact** (table names, column names, API fields, etc. are behavioral constraints, not contamination). Apply the spec-sanitization skill's External System Exception.
+- **External system contracts** (database, api-{service}, cli-{tool}, format-{name}, platform-{os}) → `output/specs/contracts/` — these document systems the app doesn't own. **Pass through with details intact** (table names, column names, API fields, etc. are behavioral constraints, not contamination). Apply the spec-sanitization skill's External System Exception.
 - Protocol specs (rest-api, plugin-protocol, session-format, ipc-messaging) → `output/specs/contracts/`
 - Journey specs → `output/specs/journeys/`
 - Test vectors → `output/test-vectors/`
@@ -1048,7 +1199,7 @@ Write sanitization report to `workspace/output/sanitization-report.md` — this 
 After all sanitizers complete, run LLM judge verification. Batch the output specs files into groups of 4-5 and dispatch one `greenfield:analyzer` per batch as a contamination-judge.
 
 For each batch, dispatch `greenfield:analyzer`:
-- Prompt: "Role: contamination-judge (Layer 5 verification). Follow the **spec-sanitization skill**, specifically the reimplementor test. Workspace: `<workspace-path>`. Read these output specs end-to-end: [list of 4-5 files from `workspace/output/specs/`]. For every identifier, name, path, or reference in each file, apply the reimplementor test: would someone with zero access to the source code understand this term? External contract files (database.md, api-*.md, cli-*.md, format-*.md) document systems the app doesn't own — their contents are behavioral constraints, not contamination. Produce a structured verdict for each file: PASS or FAIL with specific findings. Write verdicts to `workspace/raw/audit/contamination-judge-batch-N.md`."
+- Prompt: "Role: contamination-judge (Layer 5 verification). Follow the **spec-sanitization skill**, specifically the reimplementor test. Workspace: `<workspace-path>`. Read these output specs end-to-end: [list of 4-5 files from `workspace/output/specs/`]. For every identifier, name, path, or reference in each file, apply the reimplementor test: would someone with zero access to the source code understand this term? External contract files (database.md, api-*.md, cli-*.md, format-*.md, platform-*.md) document systems the app doesn't own — their contents are behavioral constraints, not contamination. Produce a structured verdict for each file: PASS or FAIL with specific findings. Write verdicts to `workspace/raw/audit/contamination-judge-batch-N.md`."
 - Dispatch all batches in parallel
 - Commit: `[L5:contamination-judge] Contamination verification batch N`
 
@@ -1304,6 +1455,7 @@ git tag -a fidelity-check-complete -m "Layer 7: Fidelity validation passed (N cl
 | Agent produces partial output | Commit partial output. Flag for review. Continue. |
 | Gate fails | Remediate up to 3 times. If still failing, abort with exit code 1. |
 | Container build/crash | Log error. Mark runtime mode as unavailable/degraded. Continue with other modes. |
+| macOS permission denied (TCC) | Log which permission. Degrade per the preflight doctor matrix (drop screenshots / drop role / exclude source type). Continue with remaining sources. |
 | User interruption | Workspace state preserved in git. Re-run `/analyze` to resume automatically. |
 
 ---
@@ -1318,8 +1470,9 @@ After pipeline completion (or failure), print a summary. Shape depends on whethe
 === ANALYSIS SUMMARY ===
 Target:            <target-name>
 Workspace:         <workspace-path>
-Sources analyzed:  source, docs, sdk, community, git-history, tests
-Sources skipped:   runtime (no container runtime), binary (no binaries found)
+Sources analyzed:  source, docs, sdk, community, git-history, tests, macos-bundle
+Sources skipped:   runtime (no container runtime), binary (no binaries found),
+                   macos-runtime, app-data (consent declined)
 Agents dispatched: N
 Gate 1:            PASS
 Gate 1b:           PASS
@@ -1336,7 +1489,8 @@ Next steps:        Read raw/specs/ directly, or rerun /analyze and opt in
 === ANALYSIS SUMMARY ===
 Target:             <target-name>
 Workspace:          <workspace-path>
-Sources analyzed:   source, docs, sdk, community, git-history, tests
+Sources analyzed:   source, docs, sdk, community, git-history, tests,
+                    macos-bundle, macos-runtime, app-data
 Sources skipped:    runtime (no container runtime), binary (no binaries found)
 Agents dispatched:  N
 Gate 1:             PASS
