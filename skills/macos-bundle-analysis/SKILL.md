@@ -158,7 +158,18 @@ Entitlement contents are `source=machine-readable-contract`, `confidence=confirm
 
 ```bash
 mkdir -p workspace/raw/macos/bundle/sdef
-sdef "$APP" > workspace/raw/macos/bundle/sdef/dictionary.sdef 2>/dev/null
+# Prefer the dictionary the app SHIPS as a resource — reading the file needs no tools and
+# works on a CLT-only host. The `sdef` CLI requires FULL Xcode ("tool 'sdef' requires Xcode,
+# but active developer directory is a command line tools instance") and errors on a base
+# image that has only Command Line Tools, so use it only as a fallback for apps whose
+# dictionary is generated dynamically (OSAScriptingDefinition points at a resource that
+# is present in most apps, Things included).
+BUNDLED_SDEF=$(/bin/ls "$APP"/Contents/Resources/*.sdef 2>/dev/null | head -1)
+if [ -n "$BUNDLED_SDEF" ]; then
+  cp "$BUNDLED_SDEF" workspace/raw/macos/bundle/sdef/dictionary.sdef
+else
+  sdef "$APP" > workspace/raw/macos/bundle/sdef/dictionary.sdef 2>/dev/null   # needs full Xcode
+fi
 
 # Parse with xmllint (fallback: grep over the XML if xmllint chokes)
 SDEF=workspace/raw/macos/bundle/sdef/dictionary.sdef

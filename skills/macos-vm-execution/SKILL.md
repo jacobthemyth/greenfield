@@ -51,7 +51,8 @@ FREE_GB=$(df -g "$HOME" | tail -1 | awk '{print $4}')
 
 # 4. The 2-running-guest kernel ceiling. Count what is already up.
 if command -v tart >/dev/null 2>&1; then
-  RUNNING=$(tart list --running 2>/dev/null | tail -n +2 | grep -c .)   # grep -c always prints a count
+  # `tart list --running` is NOT a valid flag (tart 2.32.1). Parse the State column (last field).
+  RUNNING=$(tart list 2>/dev/null | awk 'NR>1 && $NF=="running"' | grep -c .)
   [ "$RUNNING" -ge 2 ] && echo "2 guests already running: VM options unavailable this run"
 fi
 if command -v lume >/dev/null 2>&1; then
@@ -174,14 +175,17 @@ bash -lc '<cmd>'
 For AppleScript / System Events, Accessibility (AX) queries, `screencapture` — anything that needs the Aqua session.
 
 ```bash
-# vm-tart / vm-lume — SSH *plus* attach to the auto-login Aqua session
+# vm-tart / vm-lume — SSH, become root to enter the auto-login Aqua session, then drop
+# back to the user so TCC attributes the call to the user + binary (not root).
 ssh -o StrictHostKeyChecking=no admin@"$(tart ip "$GF_VM")" \
-  "launchctl asuser $(id -u admin) <cmd>"
+  "sudo launchctl asuser $(id -u admin) sudo -u admin <cmd>"
 # host-direct — already in a graphical session
 <cmd>
 ```
 
-**A bare `osascript` or `screencapture` run straight over SSH executes in the detached SSH session, not the Aqua session. It returns an empty AX tree, an empty window list, or a wallpaper-only screenshot — and it exits 0. The output looks exactly like a legitimate finding and is not one. This is the single most failure-prone mechanic in the entire macOS capability.** `launchctl asuser $(id -u admin)` is the fix: it re-parents the command into the logged-in user's GUI session so the window server answers. Every GUI-touching command goes through `gf_gui`, never `gf_exec`.
+**A bare `osascript` or `screencapture` run straight over SSH executes in the detached SSH session, not the Aqua session. It returns an empty AX tree, an empty window list, or a wallpaper-only screenshot — and it exits 0. The output looks exactly like a legitimate finding and is not one. This is the single most failure-prone mechanic in the entire macOS capability.** `sudo launchctl asuser $(id -u admin) sudo -u admin` is the fix: `launchctl asuser` re-parents the command into the logged-in user's GUI session so the window server answers — but switching audit sessions needs root (a bare `launchctl asuser` from an SSH shell fails with `Could not switch to audit session: Operation not permitted`), so it must run under `sudo`, and the inner `sudo -u admin` drops back to the user so TCC attributes the call to the user + binary rather than root. Every GUI-touching command goes through `gf_gui`, never `gf_exec`.
+
+**TCC attribution note (verified on Tahoe):** when a command is launched this way over SSH, the *responsible* process macOS evaluates for TCC is `/usr/libexec/sshd-keygen-wrapper`, **not** `osascript`/`screencapture`. All app-agnostic grants and every per-app Automation grant must be keyed to that binary (see §9). The exec convention also does not inherit a login PATH — Homebrew tools live at `/opt/homebrew/bin`, which a non-login SSH shell omits, so wrap tool calls in `bash -lc '…'` or use absolute paths.
 
 ### `gf_get <guest-path> <host-path>` / `gf_put <host-path> <guest-path>`
 
@@ -212,11 +216,11 @@ A skill file contains the snippet `osascript -e 'tell app "System Events" to cou
 ```bash
 # vm-tart
 ssh -o StrictHostKeyChecking=no admin@"$(tart ip "$GF_VM")" \
-  "launchctl asuser $(id -u admin) osascript -e 'tell app \"System Events\" to count processes'"
+  "sudo launchctl asuser $(id -u admin) sudo -u admin osascript -e 'tell app \"System Events\" to count processes'"
 
 # vm-lume
 ssh -o StrictHostKeyChecking=no lume@"$(lume ip "$GF_VM")" \
-  "launchctl asuser $(id -u lume) osascript -e 'tell app \"System Events\" to count processes'"
+  "sudo launchctl asuser $(id -u lume) sudo -u lume osascript -e 'tell app \"System Events\" to count processes'"
 
 # host-direct
 osascript -e 'tell app "System Events" to count processes'
@@ -278,9 +282,15 @@ workspace/raw/macos/bundle/environment-diff.md
 
 Neither image family pre-grants TCC. Document the path honestly rather than pretending grants exist:
 
-1. **Disable SIP (one-time, per base image).** `tart run --recovery "$GF_VM"`, then in the recoveryOS terminal `csrutil disable` and reboot. This is manual over VNC and happens **once** when the provisioned base is built — which is exactly why §10 uses a provision-once / clone-per-run pattern.
+1. **SIP.** The `ghcr.io/cirruslabs/macos-*-base` images **ship with SIP already disabled** (verified: `csrutil status` → "disabled"), so no action is needed for them. Only a from-scratch `-vanilla` image requires disabling it, via `tart run --recovery "$GF_VM"` then `csrutil disable` in the recoveryOS terminal over VNC — a one-time manual step, which is why §10 uses a provision-once / clone-per-run pattern.
 
-2. **Insert grants with SIP off.** `INSERT OR REPLACE` into the system TCC database (`/Library/Application Support/com.apple.TCC/TCC.db`) for `kTCCServiceAccessibility` and `kTCCServiceScreenCapture`, and into the user database for `kTCCServiceAppleEvents`. Key each grant to the binary that issues the call — `/usr/bin/osascript`, `/usr/sbin/screencapture`, the ssh/login shell — with a valid `csreq` requirement blob. Grant Full Disk Access to the shell if group-container data must be read.
+2. **Insert grants with SIP off.** `INSERT OR REPLACE` into the system TCC database (`/Library/Application Support/com.apple.TCC/TCC.db`) for `kTCCServiceAccessibility` and `kTCCServiceScreenCapture`, and into the user database for `kTCCServiceAppleEvents`. **Key the grant to the process macOS holds *responsible*, which for SSH-driven automation is `/usr/libexec/sshd-keygen-wrapper` — not `osascript`/`screencapture` (verified: the consent prompt names the wrapper).** The cirruslabs base images already grant `sshd-keygen-wrapper` Accessibility, ScreenCapture, and AppleEvents→`com.apple.systemevents`, which is why app-agnostic UI scripting works out of the box; grant `osascript`/`screencapture` too as belt-and-suspenders. A **per-app** Automation grant (to script a specific target app) is a `kTCCServiceAppleEvents` row with `client='/usr/libexec/sshd-keygen-wrapper'` and the target's bundle id in `indirect_object_identifier`. Compute the `csreq` blob per binary (works on Tahoe):
+   ```bash
+   codesign -d -r- /usr/libexec/sshd-keygen-wrapper 2>&1 | awk -F ' => ' '/designated/{print $2}' \
+     | csreq -r- -b /tmp/w.csreq
+   HEX=$(xxd -p /tmp/w.csreq | tr -d '\n')   # → X'$HEX' in the csreq column
+   ```
+   Grant Full Disk Access to the shell if group-container data must be read. Note Screen Recording worked from a plain TCC.db write on this Tahoe image; if a build enforces the separate `replayd` periodic re-consent gate, the visual skill degrades to AX-only.
 
 3. **Verify, never assume.** The TCC schema drifts between macOS releases (column sets and `auth_value` semantics have changed). Every grant is immediately followed by a probe — the same probes the gate's preflight doctor runs — and **the probe outcome, not the `INSERT` exit code, is what gets recorded.**
 
