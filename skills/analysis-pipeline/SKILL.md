@@ -96,16 +96,21 @@ Layer 1 auto-discovers available intelligence sources and consumes all of them b
 | Git History | git-archaeologist | workspace/raw/project-history/ | RAW |
 | Test Suites | test-reader, test-runner | workspace/raw/test-evidence/ | RAW |
 | Machine-Readable Contracts | contract-parser | workspace/public/contracts/ | PUBLIC |
+| macOS Bundle (static) | bundle-inspector | workspace/raw/macos/bundle/ (contract summaries → workspace/public/contracts/) | RAW + PUBLIC |
+| macOS Host Runtime (consent-gated) | applescript-explorer, ui-observer | workspace/raw/macos/runtime/ | RAW |
+| App Data Stores (consent-gated, read-only) | data-inspector | workspace/raw/macos/app-data/ | RAW |
 
 Sources are auto-discovered. Use `--exclude` to skip specific source types.
 
 Sources are excluded only by `--exclude` flag or user request during discovery negotiation.
 
+The `macos-runtime` and `app-data` source types additionally require the dispatch-time host-observation consent gate, recorded in `workspace/consent/macos-host-observation.md`. Declined consent behaves exactly like `--exclude` for those source types. `macos-bundle` is static analysis only — it needs no consent and never launches the app.
+
 ## Source Coverage
 
 More independent source types covering the same behaviors = higher-confidence specs.
 
-**Minimum for high-confidence:** 2+ independent source types covering the same behaviors. When a behavioral claim is supported by only one source, it gets `confidence=inferred` at best. When 2+ independent sources agree, it gets `confidence=confirmed`.
+**Minimum for high-confidence:** 2+ independent source types covering the same behaviors. When a behavioral claim is supported by only one source, it gets `confidence=inferred` at best. When 2+ independent sources agree, it gets `confidence=confirmed`. Independence is judged by evidence group, not citation count: multiple observation channels into the same running app (screenshots, accessibility dumps, scripted queries) count as ONE source type. See Source Independence in the provenance-methodology skill.
 
 ## Provenance
 
@@ -216,6 +221,14 @@ workspace/
 │   │   ├── ux-flows/
 │   │   └── visual/            # visual-explorer output
 │   ├── binary/                # Binary analysis
+│   ├── macos/                 # macOS app analysis
+│   │   ├── bundle/            # bundle-inspector output
+│   │   ├── runtime/           # applescript-explorer, ui-observer output
+│   │   │   ├── observations/  # (plus preflight.md, preflight-visual.md, command-surface.md, window-inventory.md, visual-behaviors.md, screenshot-manifest.md at runtime/ root)
+│   │   │   ├── scripting/
+│   │   │   ├── screenshots/
+│   │   │   └── flows/
+│   │   └── app-data/          # data-inspector output
 │   ├── project-history/       # git-archaeologist output
 │   ├── test-evidence/         # test-reader, test-runner output
 │   ├── synthesis/             # Layer 2 output
@@ -232,6 +245,8 @@ workspace/
 │       └── validation/
 ├── output/                     # Sanitized specs
 │   └── specs/
+├── consent/                   # Host-observation consent artifacts
+│   └── macos-host-observation.md
 ├── provenance/                # Session logs
 │   └── sessions/
 └── workspace.json             # Metadata
@@ -244,9 +259,12 @@ workspace/
 - **All interactive commands**: Runtime commands with arguments
 - **All keyboard shortcuts**: Every shortcut and what it does
 - **All env vars and config keys**: Complete list
+- **All menu commands**: Every menu item and its effect, for GUI apps
+- **All URL scheme commands**: Scheme, command paths, parameters
+- **All automation surface**: Scripting classes/commands, e.g. an AppleScript dictionary
 
 ### 1. External Contracts
-- CLI interface, environment variables, configuration files
+- CLI interface, environment variables, configuration files, platform contracts (URL schemes, document types/UTIs, scripting dictionaries)
 
 ### 2. Wire Protocols
 - Request/response formats, wire format, error responses

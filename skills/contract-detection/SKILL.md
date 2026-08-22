@@ -1,6 +1,6 @@
 ---
 name: contract-detection
-description: Layer 1 skill for parsing machine-readable API contracts. OpenAPI/Swagger, GraphQL, Protobuf/gRPC, and JSON Schema detection, extraction, and behavioral claim generation. Loaded by the analyzer agent during Layer 1.
+description: Layer 1 skill for parsing machine-readable API contracts. OpenAPI/Swagger, GraphQL, Protobuf/gRPC, and JSON Schema detection, extraction, and behavioral claim generation; registry for macOS bundle contracts (extraction delegated to macos-bundle-analysis). Loaded by the analyzer agent during Layer 1.
 ---
 
 # Contract Detection Methodology
@@ -381,6 +381,33 @@ Write to `workspace/public/contracts/json-schema-summary.md`:
 - `tags` must contain unique strings, maximum 10
 ```
 
+## macOS Bundle Contracts (delegated extraction)
+
+### Detection
+
+```bash
+# Find macOS bundle contract files (cheap, no plutil required)
+find . -name "Info.plist" -path "*.app/*" 2>/dev/null
+find . -name "*.sdef" 2>/dev/null
+find . -name "*.entitlements" 2>/dev/null
+
+# Or: the target path itself is a .app bundle
+```
+
+### Ownership
+
+When detected, extraction is performed by the macos-bundle-analysis skill on the macOS host, which writes:
+
+- `workspace/public/contracts/macos-plist-contracts.md` -- CFBundleURLTypes, CFBundleDocumentTypes, UTExported/ImportedTypeDeclarations, NSServices
+- `workspace/public/contracts/macos-sdef.md` -- classes, commands, properties, enumerations
+- `workspace/public/contracts/macos-entitlements.md` -- entitlement declarations
+
+This skill does not re-run plutil/sdef parsing.
+
+### Provenance
+
+Claims from these files use `source=machine-readable-contract`. Explicit declarations are `confirmed` by definition (vendor-authored, OS-enforced). XPC service names discovered in bundles are inventory, not contract, unless external consumption is evidenced.
+
 ## Cross-Contract Correlation
 
 When multiple contract types are present (e.g., both OpenAPI and GraphQL, or OpenAPI with JSON Schema references), correlate them:
@@ -389,6 +416,7 @@ When multiple contract types are present (e.g., both OpenAPI and GraphQL, or Ope
 - Are the same data models defined consistently across contracts?
 - Do version numbers align?
 - Are there endpoints in one contract that are missing from another?
+- For macOS targets, do declared URL schemes correlate with documented/observed URL commands, and do sdef terms correlate with runtime scripting observations? Discrepancies go in the cross-contract notes output.
 
 Document correlations and discrepancies in `workspace/public/contracts/cross-contract-notes.md`.
 
@@ -421,6 +449,9 @@ workspace/public/contracts/
     graphql-summary.md             # GraphQL schema extraction
     protobuf-summary.md            # Protobuf/gRPC extraction
     json-schema-summary.md         # JSON Schema extraction
+    macos-plist-contracts.md       # written by macos-bundle-analysis
+    macos-sdef.md                  # written by macos-bundle-analysis
+    macos-entitlements.md          # written by macos-bundle-analysis
     cross-contract-notes.md        # Correlations and discrepancies across contract types
     raw/                           # Copies of discovered contract files for reference
         openapi.yaml

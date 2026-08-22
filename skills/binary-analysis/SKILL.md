@@ -14,11 +14,13 @@ Binary analysis activates when:
 - The discovery inventory identifies compiled binaries at the target path
 - Other modes discover compiled artifacts during analysis (e.g., a bundled native binary inside an npm package)
 
+For macOS app bundles, binary-analysis covers the executables — `Contents/MacOS/*` and `Contents/Frameworks/*` binaries, as listed in `workspace/raw/macos/bundle/binary-handoff.md`. Bundle resources (Info.plist, sdef, .lproj string catalogs, asset catalogs) are owned by the macos-bundle-analysis skill — do not re-extract them. Entitlements are also owned by macos-bundle-analysis (its signing phase runs codesign); consume `workspace/raw/macos/bundle/signing.md` rather than re-running codesign.
+
 ## Binary Type Taxonomy
 
 | Artifact Type | Format | Survey Tools | Decompiler | Decompilation Quality | Default Confidence |
 |--------------|--------|-------------|------------|----------------------|-------------------|
-| Native binaries | ELF, Mach-O, PE | `file`, `readelf`/`otool`/`objdump`, `nm`, `strings` | Ghidra, radare2 (disassembly only) | N/A (no source recovery) | `assumed` |
+| Native binaries | ELF, Mach-O, PE | `file`, `readelf`/`otool`/`objdump`, `nm`, `codesign`, `strings` | Ghidra, radare2 (disassembly only) | N/A (no source recovery) | `assumed` |
 | JVM bytecode | `.class`, `.jar`, `.war` | `jar tf`, `javap -public`, manifest extraction | CFR, Procyon, FernFlower | Very high | `inferred` |
 | .NET assemblies | `.dll`, `.exe` (managed) | `dotnet ildasm`, type enumeration, attributes | ILSpy (`ilspycmd`) | Very high | `inferred` |
 | Python bytecode | `.pyc`, `.pyo` | Magic number inspection, `strings` | uncompyle6, decompyle3, pycdc | Very high | `inferred` |
@@ -65,7 +67,17 @@ otool -h target.bin                    # Mach-O header
 otool -l target.bin                    # Load commands
 otool -TV target.bin                   # Exports trie
 otool -L target.bin                    # Linked libraries
+codesign -dv --verbose=4 target.app             # Signing identity, team ID, flags
+otool -ov target.bin                            # Objective-C runtime metadata: classes, methods, ivars
+nm target.bin | grep '_OBJC_CLASS_\$_'          # Obj-C class list from symbols
+nm target.bin | xcrun swift-demangle            # Swift symbols demangled (requires Xcode CLT)
+vtool -show target.bin                          # Build/SDK version load commands
 ```
+
+Notes:
+- class-dump/dsdump are NOT assumed installed — `otool -ov` + `nm` are the built-in baseline; if a class-dump-style tool is already present it may be used with the same provenance.
+- Obj-C selector names are the Mach-O analog of CLI help text — `-addTaskWithTitle:` style metadata is high-value behavioral signal; feed it into the existing strings categorization.
+- macOS `strings` lacks GNU `-el` — if UTF-16 literals matter, use the container's binutils strings (rare for Mach-O).
 
 ### Native Binary Tools (PE)
 
@@ -237,6 +249,7 @@ Single authoritative evidence source:
 - Decompiled managed code (JVM, .NET, Python)
 - Algorithm identification with strong constant/pattern match
 - Dependency identification from linker metadata
+- Objective-C class/method names from `otool -ov`/`nm` and demangled Swift symbols — compiler-emitted runtime metadata read verbatim; cite as `inferred`, not `assumed`. Keep `assumed` for control-flow interpretation.
 
 ### When to Use `assumed`
 
@@ -287,11 +300,13 @@ Analysis tools may be complex to install. Pre-built containers hold the tools (n
 
 | Binary Type | Base Image | Key Tools |
 |-------------|-----------|-----------|
-| Native (ELF/Mach-O/PE) | ubuntu:22.04 | binutils, radare2, Ghidra |
+| Native (ELF/PE) | ubuntu:22.04 | binutils, radare2, Ghidra |
 | JVM | eclipse-temurin:21 | CFR, Procyon, javap |
 | Python | python:3.12 | uncompyle6, decompyle3, pycdas |
 | .NET | mcr.microsoft.com/dotnet/sdk:8.0 | ILSpy CLI |
 | WASM | rust:1.75 | wasm-tools, wabt |
+
+**Mach-O exception:** Mach-O analysis runs on the macOS host, not in a container — `otool`, `nm`, `codesign`, `strings`, and `xcrun swift-demangle` are macOS system tools that do not exist in Linux images. All are read-only static inspectors; the target is never executed. Ghidra/radare2 deep analysis of Mach-O may still use the ubuntu container (both parse Mach-O), mounting the binary read-only.
 
 Containers mount the target at `/target:ro` and write output to `/output:rw`. Containers run with `--network=none`. The target is never executed inside these containers.
 

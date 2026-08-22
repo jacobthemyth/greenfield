@@ -46,6 +46,26 @@ digraph discovery {
 
 ---
 
+## Target Resolution (URL Targets)
+
+If the target argument is an http(s) URL rather than a local path, resolve it before Phase 1:
+
+1. **Identify the product.** WebFetch the URL to determine what product it describes (name, vendor, platform).
+2. **Attempt to locate an installed macOS app.**
+
+```bash
+# Search installed applications by product name
+mdfind "kMDItemKind == 'Application'" 2>/dev/null | grep -i "$PRODUCT_NAME"
+
+# Once a bundle identifier is known, search by it directly
+mdfind "kMDItemCFBundleIdentifier == '$BUNDLE_ID'" 2>/dev/null
+```
+
+3. **Found:** Record the app under a new `## Resolved Targets` section of the inventory. The resolved app path becomes the primary target — run Phase 1.8 against it.
+4. **Not found:** Proceed with website-only analysis (docs/community/sdk source types), recording the URL as the primary documentation site for the doc-researcher dispatch.
+
+---
+
 ## Phase 1: Local Filesystem Scan
 
 Survey the target path and its surrounding context. Read directory structures, detect file types, and catalog everything that could feed analysis.
@@ -279,6 +299,44 @@ if [ -d "$TARGET_PATH/.git" ]; then
 fi
 ```
 
+### 1.8 macOS Application Bundle Detection
+
+A `.app` bundle is a DIRECTORY containing `Contents/Info.plist` — the Mach-O executable probe in 1.2 (`find -perm +111`) misses it. Detect bundles explicitly:
+
+```bash
+# Detect .app bundles (directories, not files)
+find "$TARGET_PATH" -maxdepth 3 -type d -name "*.app" 2>/dev/null | \
+  while read -r APP; do
+    [ -f "$APP/Contents/Info.plist" ] && echo "$APP"
+  done
+```
+
+All checks in this phase are **passive**. Never launch the app. Never read its data containers — probing `~/Library/Group Containers` fires TCC permission prompts. All active probing is deferred to the post-consent preflight doctor in the orchestrator.
+
+```bash
+# Bundle identity
+plutil -extract CFBundleIdentifier raw "$APP/Contents/Info.plist" 2>/dev/null
+plutil -extract CFBundleName raw "$APP/Contents/Info.plist" 2>/dev/null
+plutil -extract CFBundleShortVersionString raw "$APP/Contents/Info.plist" 2>/dev/null
+
+# Scripting dictionary presence (does NOT launch the app)
+sdef "$APP" 2>/dev/null | head -c 200
+
+# Signature and notarization verdict
+codesign -dv "$APP" 2>&1 | head -5
+spctl -a -v "$APP" 2>&1
+```
+
+Record:
+
+- **Bundle id, name, version** from `Info.plist`.
+- **sdef present** — whether the app ships an AppleScript dictionary.
+- **Signed/notarized verdict** from `codesign` / `spctl`.
+- **URL schemes (CFBundleURLTypes)** — registered scheme entries from `Info.plist`.
+- **Main executable path** — note `Contents/MacOS/<exe>` as the input path for the existing `binary` source type.
+- **Conventional data locations** — derived from entitlement group-container IDs (`codesign -d --entitlements -` output) WITHOUT touching them.
+- **Required TCC permissions** — which permissions each consent-gated source type will require: `macos-runtime` requires Automation (Apple Events) for the applescript-explorer plus Accessibility and Screen Recording for the ui-observer; `app-data` may require Full Disk Access for Group Containers.
+
 ---
 
 ## Phase 2: Web Search
@@ -505,6 +563,14 @@ After all four phases complete, write the inventory to `workspace/inventory.md`.
 
 ---
 
+## Resolved Targets
+
+<!-- Only when the target argument was a URL (see Target Resolution) -->
+
+| Given Target | Resolved To | Method |
+|--------------|------------|--------|
+| https://example.com | /Applications/Example.app | mdfind kMDItemCFBundleIdentifier |
+
 ## Source Code
 
 | Language | File Count | Location | Analytical Value |
@@ -518,6 +584,20 @@ After all four phases complete, write the inventory to `workspace/inventory.md`.
 | Type | Count | Location | Decompilation Potential |
 |------|-------|----------|------------------------|
 | ... | ... | ... | ... |
+
+## macOS Application Bundle
+
+| Property | Value |
+|----------|-------|
+| Bundle id | com.example.app |
+| Version | 3.2.1 |
+| Signed/notarized | Valid, notarized (spctl: accepted) |
+| sdef present | Yes |
+| URL schemes | example:// |
+| Main executable | /Applications/Example.app/Contents/MacOS/Example |
+| Conventional data locations | ~/Library/Group Containers/ABC123.com.example/ (not probed) |
+| Permissions required — macos-runtime | Automation (Apple Events) — applescript-explorer; Accessibility, Screen Recording — ui-observer |
+| Permissions required — app-data | Full Disk Access may be required for Group Containers |
 
 ## Test Suites
 
@@ -660,6 +740,10 @@ After the inventory is finalized (including user feedback), write a dispatch map
 | Runtime (Behavior) | behavior-observer | runtime-observation | P2 | container |
 | Binaries (managed) | binary-surveyor → source-analysis handoff | binary-analysis | P2 | lib/*.jar |
 | Binaries (native) | binary-surveyor, binary-deep-analyzer | binary-analysis | P3 | bin/ |
+| macOS bundle (static) | bundle-inspector | macos-bundle-analysis | P0 | path to .app |
+| macOS host runtime | applescript-explorer, ui-observer | macos-runtime-observation, macos-visual-exploration | P1 | host (consent-gated) |
+| App data stores | data-inspector | app-data-inspection | P1 | group container / defaults domain (consent-gated) |
+| macOS main executable | binary-surveyor, binary-deep-analyzer | binary-analysis | P2 | Contents/MacOS/<exe> |
 | OpenAPI spec | doc-researcher | doc-research | P0 | api/openapi.yaml |
 | GraphQL schema | doc-researcher | doc-research | P0 | schema.graphql |
 | Protobuf definitions | doc-researcher | doc-research | P1 | proto/ |

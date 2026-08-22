@@ -155,6 +155,7 @@ This test catches everything: minified gibberish, internal function names, inter
 - Public library/tool names: `jq`, `ffmpeg`, `pandoc`
 - Standard tech names: `OAuth`, `PKCE`, `TLS`, `JWT`
 - IDE names: `PyCharm`, `GoLand`, `VSCode`
+- Platform-registered identifiers: URL schemes and command paths (things:///add), UTIs (public.utf8-plain-text), scripting-dictionary terms, Services menu names, keyboard shortcuts, documented defaults keys
 
 For each file, report:
 1. PASS or FAIL
@@ -298,7 +299,7 @@ Phrases that describe internal code organization rather than observable behavior
 
 #### CC-6: IPC Channel Names
 
-Internal inter-process communication channel identifiers. Look for IPC-prefixed names, channel string literals, or message-passing identifiers that are internal to the implementation.
+Internal inter-process communication channel identifiers. Look for IPC-prefixed names, channel string literals, or message-passing identifiers that are internal to the implementation. XPC/mach service names and distributed-notification names follow the same rule: contamination unless evidence shows external tools consume them.
 
 **Rewrite guidance:** Replace with "internal messaging mechanism" or describe the behavioral outcome instead.
 
@@ -329,7 +330,7 @@ Internal database table names, column names, migration identifiers, or storage A
 
 **Rewrite guidance:** Replace with behavioral data persistence descriptions (e.g., "persists session data locally").
 
-**External system exception:** Matches in `workspace/output/specs/contracts/` files (database contracts, API contracts, CLI contracts, format contracts) are NOT contamination. External system contracts document interfaces the reimplementation must conform to — the schema/API/CLI details are behavioral constraints, not implementation choices.
+**External system exception:** Matches in `workspace/output/specs/contracts/` files (database contracts, API contracts, CLI contracts, format contracts, platform contracts) are NOT contamination. External system contracts document interfaces the reimplementation must conform to — the schema/API/CLI details are behavioral constraints, not implementation choices.
 
 #### CC-11: Internal Filenames
 

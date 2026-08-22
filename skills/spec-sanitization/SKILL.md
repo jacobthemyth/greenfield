@@ -77,6 +77,8 @@ These are choices the original developers made that a reimplementor would reason
 - ORM details: `Model.objects.filter()`, `has_many :sessions`, `@Entity`
 - DI containers: `@Inject`, `container.resolve()`, `wire.Build()`
 
+Platform contract identifiers declared in Info.plist, sdef, or entitlements are NOT framework patterns; see the Platform Contracts exception.
+
 **Build and deployment artifacts** — paths, chunk IDs, minified identifiers, line numbers:
 - Source paths: `src/`, `lib/`, `pkg/`, `internal/`, `dist/`, `target/`, `build/`
 - Source filenames: `auth-handler.ts`, `record_parser.py`, `transport.go`, `Main.java`
@@ -154,8 +156,31 @@ When the target depends on **external systems it does not own** — shared datab
 - APIs: endpoint paths, request/response field names, pagination schemes, auth flows, rate limits
 - CLI tools: command names, flag names, output formats the app parses, exit codes the app checks
 - File formats: field names, encoding rules, version headers, structural layout
+- **Platform contracts (`platform-{os}.md`):** interfaces the application registers with, or exposes through, the operating system. These are consumed by external callers (other apps, user scripts, the OS itself) and MUST be preserved exactly: URL scheme names, command paths, and parameters; UTI strings; document type extensions and roles; AppleScript/scripting-dictionary class, command, property, and enumeration names; Services menu entry names; preference keys that are user-configurable or read by other tools.
 
-External contract files flow to implementation: `workspace/raw/specs/contracts/{database,api-*,cli-*,format-*}.md` → `workspace/output/specs/contracts/`.
+External contract files flow to implementation: `workspace/raw/specs/contracts/{database,api-*,cli-*,format-*,platform-*}.md` → `workspace/output/specs/contracts/`.
+
+#### Platform Identifiers: PRESERVE vs ABSTRACT
+
+For identifiers recovered from native macOS app analysis, apply this decision table:
+
+| Identifier | Decision | Why |
+|-----------|----------|-----|
+| URL scheme, command paths, and parameters (`things:///add?title=...`) | PRESERVE | OS-registered; external callers depend on exact strings |
+| UTI strings (`public.utf8-plain-text`, vendor UTIs) | PRESERVE | Pasteboard/LaunchServices interop |
+| Document type extensions and roles | PRESERVE | File-handling contract |
+| sdef terminology (classes, commands, properties, enums) | PRESERVE | Public automation API; user scripts must keep working |
+| Services menu entry names | PRESERVE | User-visible and OS-registered |
+| Keyboard shortcuts | PRESERVE | UX contract |
+| Entitlement capability names (`com.apple.security.network.client`) | PRESERVE (inside the platform contract) | Required OS capabilities |
+| App-group IDs and bundle identifiers | ABSTRACT in behavioral specs; may appear only inside `platform-{os}.md` as original-app context | Tied to the vendor's developer account — a reimplementor cannot reuse them |
+| User-configurable defaults keys (settings UI, documented tweaks, read by other tools) | PRESERVE | Same rule as existing config-key examples |
+| Internal defaults keys (window frames, migration flags) | ABSTRACT | Internal state |
+| Internal SQLite schema (tables/columns, e.g. `TMTask`) | ABSTRACT names; PRESERVE semantics | See paragraph below |
+| XPC/mach service names, distributed-notification names | ABSTRACT unless external consumers evidenced | Same rule as IPC channel names |
+| Obj-C/Swift class names recovered from binaries | ABSTRACT | Internal code |
+
+Is the original app's local database a contract? For a reimplementation target, no — the on-disk store is app-owned implementation. The real persistence contract is the sync protocol, if one exists, which is usually unobservable; flag it as [UNCERTAINTY] rather than substituting the local schema for it. But the observed data-model semantics are behavior and MUST survive: entity kinds, their fields expressed behaviorally, status/enumeration values and their meanings, relationships and cardinalities, derivation rules (e.g. how repeat rules generate instances). Express these in Data Formats / State Model sections without the original's table or column names. Flip condition: if ecosystem evidence shows third-party tools read the database directly, the schema becomes an external contract and moves to `contracts/database.md` under the existing exception.
 
 ## Rewrite Patterns
 
@@ -210,15 +235,21 @@ Concrete before/after examples for the sanitizer to follow.
 **Before:** `Stores data in the sessions table with columns: id, owner, started_at, state`
 **After:** `Persists session data including identifier, owner, start time, and state`
 
-**Exception:** If the system is external (documented in `contracts/database.md`, `contracts/api-*.md`, `contracts/cli-*.md`, or `contracts/format-*.md`), KEEP details as-is — they are external constraints, not implementation choices. This applies to database schemas, API field names, CLI flags, file format fields, etc.
+**Exception:** If the system is external (documented in `contracts/database.md`, `contracts/api-*.md`, `contracts/cli-*.md`, `contracts/format-*.md`, or `contracts/platform-*.md`), KEEP details as-is — they are external constraints, not implementation choices. This applies to database schemas, API field names, CLI flags, file format fields, etc.
 
 ### RP-12: Code Structure Language
 **Before:** `The parseRecord() function calls validateRecord() which calls refreshToken() on failure`
 **After:** `Authentication validates the current token and refreshes it on failure`
 
+### RP-13: Platform Identifiers
+**Before:** `Stores tasks in the TMTask table; adding via things:///add?title= creates a row`
+**After:** `Accepts new items via the things:///add URL command (title parameter, MUST); persists them in local storage with fields: title, status ∈ {open, completed, canceled}, ...`
+
+**Note:** This pattern applies PRESERVE and ABSTRACT in one sentence — the OS-registered URL command and its parameter are preserved exactly (platform contract), while the internal table name is abstracted with its data-model semantics kept.
+
 ## Verification
 
-After sanitization, every file in `workspace/output/` must be reviewed. **External contract files** (`database.md`, `api-*.md`, `cli-*.md`, `format-*.md`) are exempt — they document systems the app does not own.
+After sanitization, every file in `workspace/output/` must be reviewed. **External contract files** (`database.md`, `api-*.md`, `cli-*.md`, `format-*.md`, `platform-*.md`) are exempt — they document systems the app does not own.
 
 ### LLM Judge Verification
 

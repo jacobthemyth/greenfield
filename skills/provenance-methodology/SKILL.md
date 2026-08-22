@@ -49,23 +49,37 @@ Inline HTML comment, immediately after the claim:
 
 | Rank | Source Type | When to Use | Origin |
 |------|-----------|-------------|-------|
-| 1 | `official-docs` | Published documentation, README, man pages, API references, changelogs | PUBLIC |
-| 2 | `public-api` | Observed behavior of public API endpoints, CLI commands | PUBLIC |
-| 3 | `sdk-analysis` | Published SDK, client library, or plugin source code | PUBLIC |
-| 4 | `community-knowledge` | Stack Overflow, blog posts, conference talks, third-party tutorials | PUBLIC |
-| 5 | `runtime-observation` | Behavior observed by running the product in a container | RAW |
-| 6 | `source-code` | Proprietary source code, bundles, minified JS | RAW |
-| 7 | `binary-analysis` | Disassembly, decompilation, binary instrumentation | RAW |
-| 8 | `inferred` | Reasoning, convention, analogy. No direct observation. | N/A |
+| 1 | `machine-readable-contract` | Formal published contracts (OpenAPI, GraphQL, protobuf, JSON Schema) AND vendor-shipped bundle declarations (Info.plist contract keys, sdef scripting dictionaries, entitlements) | PUBLIC |
+| 2 | `official-docs` | Published documentation, README, man pages, API references, changelogs | PUBLIC |
+| 3 | `public-api` | Observed behavior of public API endpoints, CLI commands | PUBLIC |
+| 4 | `sdk-analysis` | Published SDK, client library, or plugin source code | PUBLIC |
+| 5 | `test-suite` | Behavioral claims extracted from the target's own test assertions | RAW |
+| 6 | `bundle-analysis` | App-bundle resources read verbatim: .strings/.stringsdict catalogs, resource/framework/extension inventories | RAW |
+| 7 | `community-knowledge` | Stack Overflow, blog posts, conference talks, third-party tutorials | PUBLIC |
+| 8 | `runtime-observation` | Behavior observed by running/querying the product, including consent-gated AppleScript/JXA queries against a live host app | RAW |
+| 9 | `visual-observation` | Screenshots, accessibility-tree dumps, menu inventories of the running UI | RAW |
+| 10 | `app-data-observation` | Read-only reads of the app's own data stores (SQLite ro, defaults). Cite schema and semantics only — never quote user content | RAW |
+| 11 | `source-code` | Proprietary source code, bundles, minified JS | RAW |
+| 12 | `binary-analysis` | Disassembly, decompilation, binary instrumentation | RAW |
+| 13 | `inferred` | Reasoning, convention, analogy. No direct observation. | N/A |
+
+**Ranking rationale:** A shipped, OS-enforced machine-readable declaration outranks prose docs — when they conflict, the declaration wins. Bundle-declared plist/sdef/entitlement claims therefore cite as `machine-readable-contract`, not a separate type. There is deliberately NO `accessibility-observation` type: AX dumps are a channel of `visual-observation` — a separate type would let two channels of the same running instance masquerade as two independent sources.
 
 ### Agent Source Type Guide
 
 | Agent | Primary Source Type |
 |-------|-------------------|
 | `doc-researcher` | `official-docs` or `community-knowledge` |
+| `contract-parser` | `machine-readable-contract` |
 | `sdk-analyzer`, `integration-test-miner` | `sdk-analysis` |
 | `bundle-splitter`, `chunk-analyzer`, `function-analyzer`, `targeted-extractor` | `source-code` |
+| `test-reader`, `test-runner` | `test-suite` |
 | `cli-explorer`, `web-ui-explorer`, `behavior-observer`, `ux-documenter` | `runtime-observation` |
+| `visual-explorer` | `visual-observation` |
+| `bundle-inspector` | `machine-readable-contract` (plist/sdef/entitlements) or `bundle-analysis` (strings/resources) |
+| `applescript-explorer` | `runtime-observation` |
+| `ui-observer` | `visual-observation` |
+| `data-inspector` | `app-data-observation` |
 | `binary-surveyor`, `binary-deep-analyzer` | `binary-analysis` |
 | Layer 2 synthesis agents | Cite upstream agent output files |
 | Layer 3 documentation agents | Cite all supporting evidence from any source |
@@ -100,6 +114,24 @@ Convention, pattern matching, or reasoning. No direct source.
 - A pattern in one module is assumed to apply in another
 - Evidence is partial and the claim is the most plausible interpretation
 - Filling a spec gap where behavior must exist for the system to function
+
+## Source Independence (for `confirmed`)
+
+Two citations are independent only if they come from different evidence groups:
+
+- **A. Shipped artifact** — `machine-readable-contract`, `bundle-analysis`, `binary-analysis`, `source-code`
+- **B. Live instance** — `runtime-observation`, `visual-observation`
+- **C. Persisted app data** — `app-data-observation`
+- **D. Vendor prose** — `official-docs`
+- **E. Third-party** — `sdk-analysis`, `community-knowledge`, `public-api`, third-party `test-suite`
+
+**Worked examples:**
+
+- Menu inventory (B) + support docs (D) = independent → `confirmed`
+- AX dump + screenshot (both B, same instance) = NOT independent — record in `corroborated_by` but no confidence change
+- Info.plist + binary strings (both A, same bundle) = NOT independent
+- sdef (A) + successful live query (B) = independent
+- .strings catalog (A) + screenshot showing the string in context (B) = independent for "displayed in context X"
 
 ## How to Determine Confidence
 

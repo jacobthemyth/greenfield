@@ -142,6 +142,7 @@ Document external system contracts in dedicated files under `workspace/raw/specs
 | Error messages | "Error: Invalid API key" | UX contract |
 | HTTP headers/codes | `Authorization`, `200`, `401` | Protocol spec |
 | Dependency API contracts | `esbuild.transform(code, {loader: 'ts'})` | How target talks to its dependencies |
+| Platform-registered identifiers | `things:///add`, `public.plain-text`, sdef class names | OS-registered contract |
 
 **The rule:** If a user or external system needs to know it, INCLUDE it. If only the code needs to know it, EXCLUDE it.
 
@@ -877,6 +878,54 @@ This format is NOT owned by the application. The reimplementation MUST read/writ
 ```
 
 Output: `workspace/raw/specs/contracts/format-{name}.md`
+
+##### Platform Contract
+
+For interfaces the application registers with, or exposes through, the operating system (URL schemes, document types, scripting dictionaries, Services):
+
+```markdown
+# Platform Contract: {OS}
+
+## Ownership
+These interfaces are registered with the OS and consumed by external callers (other apps,
+user scripts, the OS itself). The reimplementation MUST expose the same identifiers.
+
+## URL Commands
+
+**Scheme:** `{scheme}://`
+
+### {scheme}:///{command-path}
+
+| Parameter | Type | Required | Purpose |
+|-----------|------|----------|---------|
+| {param} | {type} | {yes/no} | {behavioral purpose} |
+
+## Document Types & UTIs
+
+| Extension | UTI | Role |
+|-----------|-----|------|
+| {ext} | {uti string} | {Editor/Viewer/None} |
+
+## Scripting Dictionary
+
+| Term | Kind | Purpose |
+|------|------|---------|
+| {name} | {class/command/property/enumeration} | {behavioral purpose} |
+
+## Services
+
+| Menu Entry | Input | Behavior |
+|------------|-------|----------|
+| {entry name} | {accepted types} | {what it does} |
+
+## Externally-Consumed Preference Keys
+
+| Key | Type | Purpose |
+|-----|------|---------|
+| {key} | {type} | {user-configurable setting or key read by other tools} |
+```
+
+Output: `workspace/raw/specs/contracts/platform-{os}.md`
 
 ### Behavioral Integration Requirements (BIR) (CROSS INTO IMPLEMENTATION)
 

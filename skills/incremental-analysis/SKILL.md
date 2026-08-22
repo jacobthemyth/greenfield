@@ -45,6 +45,7 @@ Each entry in `derived_from` uses the fields appropriate to its source type:
 | Runtime observation | `path`, `file_hash` | timestamp in `fetched_at` |
 | Git history | `path`, `source_ref` | `file_hash` |
 | Test evidence | `path`, `file_hash` | -- |
+| App bundle artifact | `path`, `file_hash` | `source_ref` (bundle version, e.g. `"3.20.4 (32041)"` from `CFBundleShortVersionString (CFBundleVersion)`) |
 
 ### Writing High Water Marks
 
@@ -97,6 +98,9 @@ current_hash=$(sha256sum "$ARTIFACT_PATH" | cut -d' ' -f1)
 
 # For web sources:
 # Check if content has changed (HTTP ETag/Last-Modified, or re-fetch and diff)
+
+# For app-bundle targets: re-hash Info.plist, *.sdef, Contents/MacOS/*, and .lproj catalogs; a CFBundleVersion change is a cheap first-pass staleness signal.
+# App-data observations: re-check the store's PRAGMA user_version / schema hash before trusting carried-forward data-model claims.
 ```
 
 ### Step 3: Classify Specs
@@ -188,7 +192,7 @@ After incremental analysis completes, append to the `run_history` array in `work
 | `specs_analyzed` | integer | Specs that went through Layer 1-3 analysis |
 | `specs_carried_forward` | integer | Unchanged specs carried forward (0 for fresh runs) |
 | `specs_orphaned` | integer | Specs removed because sources no longer exist |
-| `source_high_water` | string | Git SHA of the source repo HEAD at analysis time |
+| `source_high_water` | string | Git SHA of the source repo HEAD at analysis time; for app-bundle targets, the bundle version string |
 
 ## Relationship to Other Skills
 
