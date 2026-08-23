@@ -357,13 +357,21 @@ gf_gui "$GF_GUEST_WORKSPACE/tools/gf-windowlist" > /tmp/gf-windows-probe.tsv
 awk -F'\t' 'NR>1' /tmp/gf-windows-probe.tsv | wc -l             # total windows
 awk -F'\t' 'NR>1 && $3==0' /tmp/gf-windows-probe.tsv | wc -l    # layer-0 (real app) windows
 awk -F'\t' 'NR>1 && $6==""' /tmp/gf-windows-probe.tsv | wc -l   # blank titles
+awk -F'\t' 'NR>1 {print $2}' /tmp/gf-windows-probe.tsv | sort -u | wc -l  # distinct owning pids
 ```
+
+**The ownership count is the one that matters.** Without the Screen Recording grant the list is not merely untitled --
+it is RESTRICTED to the caller's own windows. Measured on a terminal without the grant: six rows, two owning pids (the
+caller and Window Server), titles present only for the caller's own windows. If the target's pid is absent from the
+list while the caller's is present, the grant is missing and no amount of title-degradation helps -- there is no row
+for the target to resolve.
 
 | Outcome | Meaning | Action |
 |---------|---------|--------|
 | Populated layer-0 list, titles present | enumeration works | Capture scope = `window-id`. Continue to Probe 3 |
 | **Header row only, zero data rows** (run through `gf_gui`) | there is no window server to enumerate | **HARD GATE** -- the same stop as §0.5. Record it and exit. Never degrade to rect on this signal: a rect capture of a session with no window server is a picture of nothing |
-| Populated geometry, uniformly BLANK titles | Screen Recording attribution failure, NOT a broken enumerator -- ids, pids, layers, alphas, owners, and bounds are all still true | Degrade TITLES only: resolve windows by pid plus geometry (see **The Capture Policy**). Capture scope does NOT degrade |
+| Populated geometry, uniformly BLANK titles, MULTIPLE owning pids | Titles alone are missing -- ids, pids, layers, alphas, owners, and bounds are all still true | Degrade TITLES only: resolve windows by pid plus geometry (see **The Capture Policy**). Capture scope does NOT degrade |
+| **Only the caller's own pid appears** (plus Window Server) | Screen Recording is DENIED: the list is restricted to the caller's own windows and the target's windows are absent entirely | The target cannot be window-captured at all. Do not "degrade titles" -- there is no row to degrade. Record the denial, take the remediation path for Screen Recording, and if it cannot be granted the source degrades to `AX-only` (or `abort` when Accessibility is denied too, which on an ungranted account it usually is) |
 | Binary missing, or non-zero exit | enumeration not yet available | Work the `macos-vm-execution` ladder before giving up: build the binary with its recipe, then fall back to `/usr/bin/swift <source>.swift` interpreter mode (same output, ~1-2 s per call). Only when both fail is enumeration unavailable and the capture scope `rect-fallback` for the whole run |
 
 **Probe 3 -- window-id capture probe.** Does the run's DEFAULT capture mode actually work? This is the probe that decides the capture-scope axis, and it must be a real capture, not an inference from Probe 2.
@@ -383,10 +391,11 @@ gf_exec "shasum -a 256 $GF_GUEST_WORKSPACE/runtime/screenshots/000-preflight-{fr
 Assert all three, and record each result in the preflight table:
 
 1. **Dimension ratio.** `pixelWidth / $BW` and `pixelHeight / $BH` are the SAME INTEGER. The guest's backing scale is 2, so a 935x680 window captures at 1870x1360. A non-integer ratio, or two different ratios, means the file is not this window.
-2. **Size floor.** At least 20 KB. Below that the capture is blank.
-3. **Digest distinctness.** The SHA-256 differs from `000-preflight-frontmost.png`. An identical digest means `-l` silently produced a full-screen grab.
+2. **The file exists at all.** Given an id that is not in the current list, `screencapture -l` prints `could not create image from window`, writes **no file**, and **exits 0** -- measured. The exit status distinguishes nothing, so never branch on it; test for the file.
+3. **Size floor.** At least 20 KB. Below that the capture is blank.
+4. **Digest distinctness.** The SHA-256 differs from `000-preflight-frontmost.png`. An identical digest means `-l` silently produced a full-screen grab.
 
-Any assertion failing sets capture scope = `rect-fallback`, recorded with the assertion that failed. All three passing is what licenses window-scoped capture for the rest of the run.
+Any assertion failing sets capture scope = `rect-fallback`, recorded with the assertion that failed. All four passing is what licenses window-scoped capture for the rest of the run.
 
 ### 0.5 GUI-Session Attachment
 
@@ -615,8 +624,9 @@ gf_exec "shasum -a 256 $SHOT"
 ```
 
 1. **Dimension ratio** -- `pixelWidth / w` and `pixelHeight / h` are the same integer against the window's bounds (backing scale 2 in the guest). Catches a silent screen-grab fallback.
-2. **Size floor** -- at least 20 KB. Catches a blank capture.
-3. **Digest distinctness** -- the SHA-256 differs from `000-preflight-frontmost.png` and from the previous capture in the same flow. Catches `-l` degrading to a full-screen shot, and catches a before/after pair that is really the same frame twice.
+2. **The file exists** -- `screencapture -l` against an id that has left the list writes nothing and still exits 0, so the exit status is not a signal. Test for the file, never for `$?`.
+3. **Size floor** -- at least 20 KB. Catches a blank capture.
+4. **Digest distinctness** -- the SHA-256 differs from `000-preflight-frontmost.png` and from the previous capture in the same flow. Catches `-l` degrading to a full-screen shot, and catches a before/after pair that is really the same frame twice.
 
 **On mismatch: retry ONCE, then reject.**
 
