@@ -29,10 +29,13 @@ Every command in this skill runs inside the environment, through the helpers def
 |--------|---------|
 | `gf_exec '<cmd>'` | Non-GUI work: sqlite, `ls`, `plutil`, `defaults read`, file plumbing |
 | `gf_gui '<cmd>'` | Anything that touches the window server: AppleScript/JXA against the app, System Events, AX queries, `screencapture` |
+| `gf_windows` | Enumerate on-screen windows: TSV with the header row `id pid layer alpha owner title x y w h`, one row per window, FRONT-TO-BACK. It runs `$GF_GUEST_WORKSPACE/tools/gf-windowlist` through `gf_gui`, for the session-attachment reason below |
 | `gf_get <guest-path> <host-path>` | Pull evidence back to `workspace/` |
 | `gf_put <host-path> <guest-path>` | Push a script or fixture in |
 
-`gf_gui` exists because of one failure mode: over SSH, a GUI command runs outside the guest's Aqua session and returns an empty AX tree, an empty window list, or a wallpaper-only screenshot -- with exit status 0. It looks exactly like a finding and is not one. `gf_gui` wraps the command in `launchctl asuser` against the auto-login session so it lands in the real GUI session. On `host-direct` both helpers are pass-throughs.
+`gf_windows` exists in the same execution convention and belongs to `ui-observer`; this skill uses it for exactly two things -- Gate 5's window-server probe and the notification pointer in Phase 6 -- and never for capture.
+
+`gf_gui` exists because of one failure mode: when the SSH session is not attached to the guest's Aqua session, a GUI command returns an empty AX tree, an empty window list, or a wallpaper-only screenshot -- with exit status 0. It looks exactly like a finding and is not one. Whether a bare call is attached is image- and configuration-dependent (on a base image that auto-logs in the same user you SSH as, bare calls have been observed to work), and that is precisely what makes the failure dangerous: it is silent and it travels. Routing every GUI command through `gf_gui` is free when attachment is already implicit and load-bearing when it is not. `gf_gui` wraps the command in `launchctl asuser` against the auto-login session so it lands in the real GUI session. On `host-direct` both helpers are pass-throughs.
 
 `GF_ENV`, `GF_VM`, `GF_SSH`, and `GF_GUEST_WORKSPACE` arrive in your dispatch prompt. Write output under `$GF_GUEST_WORKSPACE/...` and `gf_get` it to the matching path under `workspace/raw/macos/...` before you finish. The Layer 1 gate counts files on the host: evidence still sitting in the guest does not exist.
 
@@ -72,6 +75,18 @@ Two skill-local rules refine this:
 
 **Self-audit obligation.** Before declaring done, review your command history and assert that every state change went through an app surface and that no command wrote to a data store, preference plist, or container file.
 
+## Driving the UI From This Skill
+
+Some mutations have no scripting verb -- emptying the trash, a drag-reorder, a button in a confirmation sheet. They still belong to this skill's mutation catalogue, and you still perform them. What you do NOT do is invent an interaction technique for them.
+
+**Use the interaction ladder in `macos-visual-exploration`, unchanged:** R1 menu command, R2 keyboard, R3 AX action, R4 AX selection on the container, R5 AX-derived coordinate click. Two attempts per rung, descend exactly once, never revisit a rung.
+
+**Record which rung actually worked in the OBS record's command field.** `menu File > Empty Trash` and a coordinate click at some pixel are different evidence: the first is reproducible at any window geometry and reads as a user action, the second is a fact about one screen at one moment. A record that just says "emptied the trash" throws that distinction away, and only one of the two is reproducible.
+
+**A synthetic click whose fingerprint did not move did not happen.** Read the cheap AX fingerprint before and after every interaction, as the ladder requires. If it did not move, log `NO-EFFECT` and descend -- do not record the result you expected as an observation. An OBS record describing the outcome of an action that never landed is worse than no record at all.
+
+Captures stay with `ui-observer`: coordinate the bracket, do not shoot the frame.
+
 ## Inputs from macos-bundle-analysis
 
 - **`workspace/raw/macos/bundle/signing.md`** -- the signature verdict. Under `host-direct` a PASS verdict is a hard precondition (a bad signature runs real code in a real account); under `vm-tart`/`vm-lume` the verdict is recorded data, not a gate.
@@ -85,6 +100,7 @@ workspace/raw/macos/runtime/
   preflight.md           # Every gate result (incl. the GUI-session check), launch policy, launched_by_pipeline flag
   observations/          # OBS-NNN records (parent skill format, Environment line)
   scripting/             # JXA/AppleScript structured dumps, one JSON file per sdef class
+                         #   + navigation-surfaces.md (read by ui-observer)
   mutations/             # corpus.md (seeded fixture log) + one before/after diff per mutation probe
 ```
 
@@ -121,7 +137,15 @@ gf_exec 'osascript -e '\''tell application "System Events" to count processes'\'
 gf_gui  'osascript -e '\''tell application "System Events" to count processes'\''   # expect a plausible integer
 ```
 
-The `gf_exec` form runs outside the Aqua session and should return empty or error; the `gf_gui` form should return a real process count. If BOTH come back empty, there is no window-server session to attach to -- a hard gate (see Failure Modes). A plausible count from `gf_gui` proves `launchctl asuser` reaches the real GUI session, which every later GUI probe depends on.
+The `gf_exec` form runs outside the Aqua session and should return empty or error; the `gf_gui` form should return a real process count. If BOTH come back empty, there is no window-server session to attach to -- a hard gate (see Failure Modes). A plausible count from `gf_gui` proves `launchctl asuser` reaches the real GUI session.
+
+That is the weaker of the two claims available here. A reachable session is not the same as a session with anything drawn in it, so run a second probe and count the layer-0 windows:
+
+```bash
+gf_gui "$GF_GUEST_WORKSPACE/tools/gf-windowlist" | awk -F'\t' 'NR>1 && $3==0' | wc -l
+```
+
+A populated layer-0 list proves there is a **window server** behind the session -- the stronger claim, and the one every GUI probe in this skill actually depends on. A header row and nothing else means no window server: treat it as a Gate 5 failure however plausible the process count was. Record both probe results in the preflight table; they fail independently.
 
 **Gate 6 -- Automation permission self-test.** TCC mediates Apple Events per (sender, target) pair. Test through `gf_gui` before assuming:
 
@@ -166,6 +190,15 @@ gf_get \$GF_GUEST_WORKSPACE/scripting/<class>.json workspace/raw/macos/runtime/s
 Use the AppleScript variant (`tell application ... to get properties of ...`) where JXA's bridge is awkward for property records; capture the record text verbatim and note the dialect. The first invocation after connecting to an app occasionally returns an empty array -- retry once before recording a result (an observed flake, not app behavior).
 
 **Shortcuts surface.** Record the app's Shortcuts exposure with `gf_exec 'shortcuts list'`. `shortcuts run` is now PERMITTED as one of the app's own surfaces, but classify every `shortcuts run` as MUTATING and sequence it in Phase 6. It is **VM-only** -- under `host-direct`, `shortcuts run` touches shared cross-account services and is recorded as not-exercised-in-this-environment. Record the un-exercised Shortcuts surface accordingly.
+
+**Navigation-capable commands.** While walking the sdef, record every command whose effect is to move the UI to a state -- `select`, `reveal`, `open`, `show`, `activate`, and any app-specific synonym -- to `workspace/raw/macos/runtime/scripting/navigation-surfaces.md`:
+
+| CAP | Command | Reaches | Verified |
+|-----|---------|---------|----------|
+| CAP-014 | `show list "<name>"` | the named list view | yes -- front window title changed |
+| CAP-021 | `reveal <item> id X` | that item's detail view | no -- returned -1728 |
+
+This skill runs BEFORE `ui-observer`, and this file is what `ui-observer` reads when it reaches a custom-drawn view that exposes no AX affordance. **A scripting command that reaches a UI state is a FULL capture route, not a degraded one** -- the app put itself into a real state through its own surface, and the resulting capture is worth exactly as much as one reached by clicking. Write the file even when every row is unverified: "this app vends no navigation verbs" is precisely the finding `ui-observer` needs before it starts descending the ladder.
 
 **Provenance:** Surface dumps are `confirmed`. Interpretations of what a class represents are `inferred` until Phase 2 exercises it.
 
@@ -268,7 +301,7 @@ The diff decodes semantics: when it shows exactly which fields a "complete task"
 **Goal:** Runs last, after every non-destructive probe has its evidence on the host. Exercises the flows that reshape or leave the environment.
 
 - **Trash semantics.** Follow a delete-to-trash object through to delete-from-trash (empty trash) with a `gf_snapshot` in front of the empty. Diff soft-delete flags, then row disappearance, then any cascade to related objects.
-- **URL-scheme exercise (VM-only).** Drive every scheme and command from `workspace/raw/macos/bundle/macos-plist-contracts.md` through the app's handler:
+- **URL-scheme exercise (VM-only).** Drive every scheme and command from `workspace/public/contracts/macos-plist-contracts.md` through the app's handler:
 
   ```bash
   gf_gui "open \"$URL_SCHEME://<command>?<param>=GREENFIELD-PROBE-AS-URL\""   # scheme + commands from the plist contracts
@@ -276,6 +309,7 @@ The diff decodes semantics: when it shows exactly which fields a "complete task"
 
   Capture the handoff each scheme triggers (which window opens, which object is created, which other app is invoked). Under `host-direct` this is **not-exercised** -- URL-scheme handoffs can escape the account boundary; record it so.
 - **`shortcuts run` (VM-only).** Run each shortcut surfaced in Phase 1, bracketed like any mutation. Under `host-direct`, recorded not-exercised.
+- **Notifications raised by these flows.** A URL-scheme handoff or a `shortcuts run` may raise a notification, and a notification-AUTHORIZATION prompt -- the app asking for permission to notify -- is app behavior worth its own OBS record: what triggered it, the exact wording, both button labels, and the answer given. Follow the capture-then-dismiss protocol in `macos-visual-exploration`. **Never suppress notifications** -- suppression deletes behavior that is part of the analysis. Detect the banner with `gf_windows` and coordinate the capture with `ui-observer` rather than shooting it yourself.
 - **Quit and recovery.** Quit with unsaved state, then force-quit-relaunch, and record the recovery behavior (prompt? silent save? state restored? data lost?). This is behavioral data.
 
 State plainly in the output that URL schemes and `shortcuts run` are VM-only and were skipped under `host-direct`.
@@ -301,6 +335,7 @@ Every failure mode produces data. Record it, degrade, continue where possible. T
 | Cross-session invisibility | `-1728` against a running process | Check `gf_gui` routing FIRST (the command may have run outside the Aqua session). A genuine `-1728` means Apple Events/AX are per-session; record and abort runtime phases |
 | App not scriptable | No sdef; no dictionary | Record the fact; skill contributes launch/process observations only |
 | App crashes during observation | Process gone; new DiagnosticReports file | Copy the crash report (a disposable environment holds no personal data) and record the mutation that caused it. The crash is behavioral data |
+| UI-driven mutation unreachable | Every ladder rung exhausted; the AX fingerprint never moved | Record the mutation not-exercised **with the rungs attempted**, and coordinate with `ui-observer` so the same state is `BLOCKED` in `state-coverage.md`. A state missing from both artifacts is indistinguishable from one nobody tried |
 | Mutation not reversible, no snapshot | A destructive probe with no `gf_snapshot` and (host-direct) no rollback | Sequence it last, or record it not-exercised with the reason; never run an irreversible probe you cannot recover from |
 | Signing verdict not PASS | Gate 2 | Under host-direct: record and exit. Under vm-*: record as data and continue (a bad signature costs a disposable clone) |
 
@@ -313,10 +348,13 @@ Every failure mode produces data. Record it, degrade, continue where possible. T
 
 ## Definition of Done
 
-- [ ] `preflight.md` complete, every gate result recorded -- including the Gate 5 GUI-session attachment check.
+- [ ] Dispatch prompt recorded verbatim as received to `workspace/provenance/dispatch/L1-applescript-explorer.received.md`, BEFORE any target-facing command runs. The orchestrator writes its own copy to `L1-applescript-explorer.md`; never overwrite it -- the pair exists so the two can be compared. Note any difference under a `## Discrepancy` heading.
+- [ ] `preflight.md` complete, every gate result recorded -- including BOTH Gate 5 probes (process count and layer-0 window count).
 - [ ] Fixture corpus built through app surfaces and logged to `mutations/corpus.md`.
 - [ ] Every scriptable class in the CAP inventory queried (with OBS records) or skipped with a recorded reason.
+- [ ] `scripting/navigation-surfaces.md` written -- every navigation-capable command with its Reaches and Verified columns, or an explicit statement that the app vends none.
 - [ ] Every MUTATING CAP command exercised-with-diff, or recorded not-exercised-with-reason (VM-only surfaces under host-direct).
+- [ ] Every UI-driven mutation names the ladder rung that worked, in the OBS record's command field.
 - [ ] Scripting-vs-data cross-check performed wherever both surfaces exist; agreements escalated with `corroborated_by`, disagreements recorded as contradictions.
 - [ ] Self-audit passed: every state change went through an app surface; zero direct writes to any data store, preference plist, or container file.
 - [ ] Every artifact written in-guest and `gf_get`'d to `workspace/raw/macos/runtime/`.

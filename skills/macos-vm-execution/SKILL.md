@@ -148,7 +148,7 @@ The design leans on two properties baked into these images:
 
 ## The Execution Convention (Normative)
 
-**Other skills depend on this section verbatim.** Skill snippets throughout the macOS capability are written as plain in-environment commands — `sqlite3 ...`, `osascript -e ...`, `screencapture ...`. Agents never run those raw. They run them through these wrappers, which the orchestrator defines once per dispatch from the exported variables below. The wrapper name encodes *which kind of work it is*, and choosing the wrong one is the dominant failure mode of the whole capability.
+**Other skills depend on this section verbatim.** Skill snippets throughout the macOS capability are written as plain in-environment commands — `sqlite3 ...`, `osascript -e ...`, `screencapture ...`, `swiftc ...`. Agents never run those raw. They run them through these wrappers, which the orchestrator defines once per dispatch from the exported variables below. The wrapper name encodes *which kind of work it is*, and choosing the wrong one is the dominant failure mode of the whole capability.
 
 The orchestrator exports these variables into every dispatch prompt:
 
@@ -183,9 +183,95 @@ ssh -o StrictHostKeyChecking=no admin@"$(tart ip "$GF_VM")" \
 <cmd>
 ```
 
-**A bare `osascript` or `screencapture` run straight over SSH executes in the detached SSH session, not the Aqua session. It returns an empty AX tree, an empty window list, or a wallpaper-only screenshot — and it exits 0. The output looks exactly like a legitimate finding and is not one. This is the single most failure-prone mechanic in the entire macOS capability.** `sudo launchctl asuser $(id -u admin) sudo -u admin` is the fix: `launchctl asuser` re-parents the command into the logged-in user's GUI session so the window server answers — but switching audit sessions needs root (a bare `launchctl asuser` from an SSH shell fails with `Could not switch to audit session: Operation not permitted`), so it must run under `sudo`, and the inner `sudo -u admin` drops back to the user so TCC attributes the call to the user + binary rather than root. Every GUI-touching command goes through `gf_gui`, never `gf_exec`.
+**A bare `osascript` or `screencapture` run straight over SSH can execute in the detached SSH session rather than the Aqua session. When it does, it returns an empty AX tree, an empty window list, or a wallpaper-only screenshot — and it exits 0. The output looks exactly like a legitimate finding and is not one. This is the single most failure-prone mechanic in the entire macOS capability.** Attachment is image- and configuration-dependent: on a base image that auto-logs in the same user you SSH as, bare calls have been observed to succeed, which is exactly why the failure is dangerous — a run that works on one image degrades silently on another. Do not test whether the bare form happens to work; route GUI work through `gf_gui` unconditionally so the attachment is explicit. `sudo launchctl asuser $(id -u admin) sudo -u admin` is the fix: `launchctl asuser` re-parents the command into the logged-in user's GUI session so the window server answers — but switching audit sessions needs root (a bare `launchctl asuser` from an SSH shell fails with `Could not switch to audit session: Operation not permitted`), so it must run under `sudo`, and the inner `sudo -u admin` drops back to the user so TCC attributes the call to the user + binary rather than root. Every GUI-touching command goes through `gf_gui`, never `gf_exec`.
 
 **TCC attribution note (verified on Tahoe):** when a command is launched this way over SSH, the *responsible* process macOS evaluates for TCC is `/usr/libexec/sshd-keygen-wrapper`, **not** `osascript`/`screencapture`. All app-agnostic grants and every per-app Automation grant must be keyed to that binary (see §9). The exec convention also does not inherit a login PATH — Homebrew tools live at `/opt/homebrew/bin`, which a non-login SSH shell omits, so wrap tool calls in `bash -lc '…'` or use absolute paths.
+
+### `gf_windows` — enumerate on-screen windows and their CGWindowIDs
+
+`screencapture -x -o -l <CGWindowID>` composites the window from the WindowServer: immune to occlusion, and the app need not be frontmost. It needs a **CGWindowID**, and no shell built-in prints one. `/usr/bin/swift` and `/usr/bin/swiftc` ship with the Command Line Tools — present in the CLT-only base images — so the run compiles a small `CGWindowListCopyWindowInfo` enumerator for itself.
+
+**The source.** The agent writes this verbatim, host-side, to `workspace/raw/macos/runtime/tools/gf-windowlist.swift`:
+
+```swift
+import CoreGraphics
+import Foundation
+
+if CommandLine.arguments.contains("--version") { print("gf-windowlist 1"); exit(0) }
+
+let opts: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+guard let wins = CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String: Any]] else { exit(1) }
+
+func flat(_ v: Any?) -> String {
+    return (v as? String ?? "").replacingOccurrences(of: "\t", with: " ")
+}
+
+print("id\tpid\tlayer\talpha\towner\ttitle\tx\ty\tw\th")
+for win in wins {
+    let b = win[kCGWindowBounds as String] as? [String: Double] ?? [:]
+    func g(_ k: String) -> String { return String(Int(b[k] ?? 0)) }
+    let cols = [
+        String(win[kCGWindowNumber as String] as? Int ?? -1),
+        String(win[kCGWindowOwnerPID as String] as? Int ?? -1),
+        String(win[kCGWindowLayer as String] as? Int ?? 0),
+        String(format: "%.2f", win[kCGWindowAlpha as String] as? Double ?? 0),
+        flat(win[kCGWindowOwnerName as String]),
+        flat(win[kCGWindowName as String]),
+        g("X"), g("Y"), g("Width"), g("Height"),
+    ]
+    print(cols.joined(separator: "\t"))
+}
+```
+
+**Build recipe.** Write host-side, copy in, compile, check the stamp:
+
+```bash
+gf_exec "mkdir -p $GF_GUEST_WORKSPACE/tools"
+gf_put workspace/raw/macos/runtime/tools/gf-windowlist.swift "$GF_GUEST_WORKSPACE/tools/gf-windowlist.swift"
+gf_exec "/usr/bin/swiftc -O -module-name gfwindowlist \
+         $GF_GUEST_WORKSPACE/tools/gf-windowlist.swift -o $GF_GUEST_WORKSPACE/tools/gf-windowlist"
+gf_exec "$GF_GUEST_WORKSPACE/tools/gf-windowlist --version"   # must print exactly: gf-windowlist 1
+```
+
+Writing the source host-side and copying it in is deliberate. A heredoc would have to survive `ssh "sudo launchctl asuser … sudo -u admin …"` — two layers of shell quoting wrapped around a body full of quotes, backslashes and `\t` escapes — and a single mangled escape yields a program that still compiles and prints the wrong thing. Copying also makes the tool an **auditable artifact**: the exact source that produced every window id in the evidence sits in the workspace beside it. (`-module-name` is not optional: swiftc derives the module name from the output filename and rejects the hyphen in `gf-windowlist`.)
+
+**Compile with `gf_exec`. Run with `gf_gui`.** `swiftc` is ordinary file work and belongs on `gf_exec`; the binary queries the window server and belongs on `gf_gui`. Where the SSH session is not attached to the Aqua session, the same binary run over plain `gf_exec` returns **the header row and almost nothing else, exit 0** — a plausible-looking empty desktop that is really the detached session having no window server to ask. Header-only output is therefore never evidence of an empty desktop; it is a routing or attachment fault until proven otherwise.
+
+```bash
+# the wrapper — every environment, always gf_gui
+gf_gui "$GF_GUEST_WORKSPACE/tools/gf-windowlist"
+
+# WRONG — on an unattached session this exits 0, prints a header, and every downstream capture silently degrades
+gf_exec "$GF_GUEST_WORKSPACE/tools/gf-windowlist"
+```
+
+**Build timing.** Lazily, **once per run, in Phase 0 preflight** — never mid-run. A compile in the middle of an interaction sequence costs seconds at exactly the moment window state is changing. A provisioned base **may** pre-compile the binary as a convenience, but the `--version` check is unconditional: a generic base predates any given skill version, and a stale `gf-windowlist` that prints a different stamp — or none — is rebuilt from the source this run shipped.
+
+**Fallback ladder.**
+
+| Rung | Mechanism | Cost |
+|------|-----------|------|
+| 1 | Compiled binary at `$GF_GUEST_WORKSPACE/tools/gf-windowlist` | ~10 s once, then instant |
+| 2 | Interpreter mode: `gf_gui "/usr/bin/swift $GF_GUEST_WORKSPACE/tools/gf-windowlist.swift"` | ~1–2 s **per call** |
+| 3 | Enumeration unavailable | The consuming skill degrades its capture scope |
+
+Rung 3 is a **capability gap, not a run failure**: the run continues with a narrower capture scope and records that it did.
+
+**Output contract.** TSV on stdout, one row per on-screen window, **front-to-back**, with the header row:
+
+```
+id	pid	layer	alpha	owner	title	x	y	w	h
+```
+
+Reading the columns:
+
+- **Front-to-back ordering is load-bearing.** The topmost window owned by a pid is its first row. An attached sheet is its own window id listed **before** its parent, so "first row for this pid" resolves sheets with no special case.
+- **Layers observed:** app windows `0`; an open menu `101`; Dock `20`; menu bar `24`; the Notification Center container `21`; NC widgets negative. Filter `layer==0` for real app windows.
+- **Match on pid, never on owner name.** `kCGWindowOwnerName` is not the AX process name and is not stable across apps.
+- **Blank titles with populated geometry mean the Screen Recording grant is missing** (§9) — ids, pids, layers, owners and bounds resolve without it; `kCGWindowName` does not. Uniformly empty `title` across every row is an attribution failure, not a broken enumerator.
+- `.optionOnScreenOnly` **excludes minimized and hidden windows.** A window that vanished from the list may have been minimized rather than closed; that is a state observation, not an error.
+
+> **Stale ids are dangerous — this is the one silent-garbage path in window capture.** After a window is minimized its id disappears from the list, but `screencapture -x -o -l <stale id>` still **exits 0 and writes a plausible ~189 KB PNG of the last-known content**. Nothing about the file says it is stale. **Always re-verify the id is present in a fresh `gf_windows` list immediately before capturing** — not once at the top of a phase, immediately before each shutter.
 
 ### `gf_get <guest-path> <host-path>` / `gf_put <host-path> <guest-path>`
 
@@ -290,7 +376,7 @@ Neither image family pre-grants TCC. Document the path honestly rather than pret
      | csreq -r- -b /tmp/w.csreq
    HEX=$(xxd -p /tmp/w.csreq | tr -d '\n')   # → X'$HEX' in the csreq column
    ```
-   Grant Full Disk Access to the shell if group-container data must be read. Note Screen Recording worked from a plain TCC.db write on this Tahoe image; if a build enforces the separate `replayd` periodic re-consent gate, the visual skill degrades to AX-only.
+   Grant Full Disk Access to the shell if group-container data must be read. Note Screen Recording worked from a plain TCC.db write on this Tahoe image; if a build enforces the separate `replayd` periodic re-consent gate, the visual skill degrades to AX-only. **The Screen Recording grant also governs `kCGWindowName`** — window ids, pids, layers, alphas, owners and bounds enumerate without it, titles do not. A `gf_windows` list with populated geometry and uniformly blank titles is a Screen Recording attribution failure, not a broken enumerator.
 
 3. **Verify, never assume.** The TCC schema drifts between macOS releases (column sets and `auth_value` semantics have changed). Every grant is immediately followed by a probe — the same probes the gate's preflight doctor runs — and **the probe outcome, not the `INSERT` exit code, is what gets recorded.**
 
@@ -301,6 +387,7 @@ Neither image family pre-grants TCC. Document the path honestly rather than pret
 Grants and installs are expensive and one-time; runs are cheap and repeated. So the design is two tiers:
 
 - **Tier 1 — the provisioned base.** The user builds a base image *once*: SIP disabled, TCC granted, and (optionally) the target app installed. This is documented and doctor-verified. **It is not automated per run** — it involves recoveryOS steps and manual verification.
+- **Pre-compiling `gf-windowlist` into a base is an optional convenience, never a dependency.** Nothing may assume the binary exists: the `--version` check and the lazy rebuild in Phase 0 preflight run unconditionally, because a generic base predates any skill version. host-direct has no base image at all, so there the lazy build is the only path.
 - **Tier 2 — the per-run clone.** Each analysis does `tart clone` of that base in seconds (APFS copy-on-write) and works in the clone.
 
 The availability probe distinguishes **"provisioned base available"** (grants present, expect a fast start) from **"raw base only — expect one-time setup"** so the gate can set the user's expectations correctly.
@@ -351,6 +438,8 @@ Caveats to surface to the user: grant TCC to the terminal in *that account's* Sy
 
 What still holds under host-direct: artifacts go to `workspace/`; the artifact records the account short name in `**Host account:**`; the same wrappers are used and simply degrade to direct execution (§7).
 
+**Tooling the run builds for itself goes in the workspace, nowhere else.** Anything the run compiles — `gf-windowlist` above all — is written to `$GF_GUEST_WORKSPACE/tools/` and never to `/usr/local/bin`, `~/bin`, or anything on a login PATH. That is what "install nothing into the account" means in practice: the binary leaves when the workspace does. Delete `tools/` at the end of a host-direct run, after the evidence has been pulled.
+
 **Boundary rule.** host-direct does full in-app read+write, *including within-app destructive flows*. But the two probe classes that can escape the app/account boundary are **VM-only**:
 
 - **URL-scheme handoffs** to other applications, and
@@ -382,6 +471,8 @@ Under host-direct these two are **recorded as not-exercised-in-this-environment*
 | Disk exhaustion | Emit `tart prune` advice, mark VM unavailable |
 | TCC probe fails after grants | Fall back to the VNC manual path (§9.4); if still failing, degrade |
 | Guest panic / hang | `tart stop` then `tart delete`, mark the source degraded |
+| `swiftc` absent, or `gf-windowlist` fails to compile | Fall back to `/usr/bin/swift` interpreter mode (~1–2 s per call); if that also fails, enumeration is unavailable and the consuming skill degrades its capture scope — a capability gap, not a run failure |
+| `gf_windows` returns only the header row | Almost always a routing mistake — the binary was run through `gf_exec` instead of `gf_gui`. Re-run through `gf_gui` before believing it. A genuinely empty list from `gf_gui` means there is no window server: that is the hard environmental gate, not a degradation |
 
 The distinction that governs all of the above: **failures about the target are behavioral data** (record and continue); **failures about the environment are gates** (they narrow options or degrade a source, they never crash the pipeline).
 
