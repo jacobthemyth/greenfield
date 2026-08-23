@@ -145,7 +145,8 @@ Record the exact output either way. Never attempt to script around a TCC denial.
 **Launch policy.** Route every launch/liveness check through `gf_gui`. Check whether the app is already running:
 
 ```bash
-gf_exec 'pgrep -x "Things3"' || gf_gui 'osascript -e '\''tell application "System Events" to exists process "Things3"'\'''
+# APP_PROCESS = the executable name from the bundle inventory (Contents/MacOS/<name>)
+gf_exec "pgrep -x \"$APP_PROCESS\"" || gf_gui "osascript -e 'tell application \"System Events\" to exists process \"$APP_PROCESS\"'"
 ```
 
 If not running, launch with `gf_gui 'open -b "$BUNDLE_ID"'` and wait-loop until the process exists (poll `pgrep -x` via `gf_exec`, bounded retries). Record `launched_by_pipeline: true|false` in preflight.md (in a VM record `launched_by_pipeline: n/a (environment discarded)`).
@@ -156,10 +157,10 @@ If not running, launch with `gf_gui 'open -b "$BUNDLE_ID"'` and wait-loop until 
 
 ```bash
 gf_gui "osascript -l JavaScript -e '
-  const app = Application(\"Things3\");
-  JSON.stringify(app.lists().map(l => ({ name: l.name(), id: l.id() })));
-' > \$GF_GUEST_WORKSPACE/scripting/lists.json"
-gf_get \$GF_GUEST_WORKSPACE/scripting/lists.json workspace/raw/macos/runtime/scripting/lists.json
+  const app = Application(\"$APP_NAME\");   // CFBundleName from the bundle inventory
+  JSON.stringify(app.tasks().map(t => ({ name: t.name(), id: t.id() })));   // <class> pluralized
+' > \$GF_GUEST_WORKSPACE/scripting/<class>.json"
+gf_get \$GF_GUEST_WORKSPACE/scripting/<class>.json workspace/raw/macos/runtime/scripting/<class>.json
 ```
 
 Use the AppleScript variant (`tell application ... to get properties of ...`) where JXA's bridge is awkward for property records; capture the record text verbatim and note the dialect. The first invocation after connecting to an app occasionally returns an empty array -- retry once before recording a result (an observed flake, not app behavior).
@@ -184,7 +185,7 @@ For each class in the CAP inventory: **counts** (`count of <class>`); **full pro
 
 **Cross-check against app-data-inspection.** Where DB reads exist for the same entities: does `count` match the row count? Do property values match column values? Agreement is two independent evidence groups -- escalate to `confirmed` with `corroborated_by=app-data-inspection`. Disagreement is a contradiction: record both and flag it (the scripting layer may filter trashed rows -- that filtering is itself a finding).
 
-**Undocumented properties.** Exercise undocumented JSON-bearing properties where the inventory hints at them (e.g., Things' `_private_experimental_ json`, exposed via `get`). Diff the JSON fields against documented sdef properties: extra fields are discoveries. The values are `confirmed`; the meaning of an undocumented field is `assumed` until corroborated by app-data-inspection or a mutation diff (Phase 5).
+**Undocumented properties.** Exercise undocumented JSON-bearing properties where the inventory hints at them (e.g., a hidden underscore-prefixed property returning whole objects as JSON, exposed via `get`). Diff the JSON fields against documented sdef properties: extra fields are discoveries. The values are `confirmed`; the meaning of an undocumented field is `assumed` until corroborated by app-data-inspection or a mutation diff (Phase 5).
 
 ## Phase 3: Boundary Testing
 
@@ -270,7 +271,7 @@ The diff decodes semantics: when it shows exactly which fields a "complete task"
 - **URL-scheme exercise (VM-only).** Drive every scheme and command from `workspace/raw/macos/bundle/macos-plist-contracts.md` through the app's handler:
 
   ```bash
-  gf_gui 'open "things:///add?title=GREENFIELD-PROBE-AS-URL"'
+  gf_gui "open \"$URL_SCHEME://<command>?<param>=GREENFIELD-PROBE-AS-URL\""   # scheme + commands from the plist contracts
   ```
 
   Capture the handoff each scheme triggers (which window opens, which object is created, which other app is invoked). Under `host-direct` this is **not-exercised** -- URL-scheme handoffs can escape the account boundary; record it so.

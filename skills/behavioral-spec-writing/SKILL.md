@@ -142,7 +142,7 @@ Document external system contracts in dedicated files under `workspace/raw/specs
 | Error messages | "Error: Invalid API key" | UX contract |
 | HTTP headers/codes | `Authorization`, `200`, `401` | Protocol spec |
 | Dependency API contracts | `esbuild.transform(code, {loader: 'ts'})` | How target talks to its dependencies |
-| Platform-registered identifiers | `things:///add`, `public.plain-text`, sdef class names | OS-registered contract |
+| Platform-registered identifiers | `acmetasks:///add`, `public.plain-text`, sdef class names | OS-registered contract |
 
 **The rule:** If a user or external system needs to know it, INCLUDE it. If only the code needs to know it, EXCLUDE it.
 

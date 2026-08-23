@@ -155,7 +155,7 @@ The orchestrator exports these variables into every dispatch prompt:
 | Variable | Meaning | Example |
 |----------|---------|---------|
 | `GF_ENV` | The environment value | `vm-tart` |
-| `GF_VM` | The working VM name | `greenfield-things3-target` |
+| `GF_VM` | The working VM name | `greenfield-acmetasks-target` |
 | `GF_SSH` | The SSH login target | `admin@192.168.64.7` |
 | `GF_GUEST_WORKSPACE` | In-guest output directory | `/Users/admin/gf-out` |
 
@@ -253,7 +253,7 @@ If the bytes are identical to the host bundle, the host-side `macos-bundle` anal
 
 ### Path B — vendor download inside the guest
 
-For URL targets, or Mac App Store apps that fail receipt validation when copied (e.g. Things: the copied MAS build refuses to launch, so fetch Cultured Code's direct-download trial instead):
+For URL targets, or Mac App Store apps that fail receipt validation when copied (a copied MAS build refuses to launch in the guest — fetch the vendor's direct-download build instead; many vendors ship a trial):
 
 ```bash
 gf_exec 'curl -L -o /tmp/foo.dmg https://vendor.example/Foo.dmg'

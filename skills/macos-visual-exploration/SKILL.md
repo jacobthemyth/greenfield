@@ -146,7 +146,7 @@ Record the chosen mode in `preflight-visual.md` before any exploration:
 
 | Check | Result | Detail | Remediation |
 |-------|--------|--------|-------------|
-| Runtime environment | PASS | vm-tart (greenfield-things3-target) | -- |
+| Runtime environment | PASS | vm-tart (greenfield-acmetasks-target) | -- |
 | Signature (signing.md) | PASS | Developer ID, notarized | -- |
 | Accessibility | PASS | UI elements enabled = true | -- |
 | Automation > System Events | PASS | trivial query returned | -- |
@@ -219,7 +219,8 @@ Document, as the browser sibling does for a landing page: application shape (sin
 Walk every menu with one submenu level:
 
 ```applescript
-tell application "System Events" to tell process "Things3"
+-- substitute the target's process name (bundle inventory, Contents/MacOS/<name>)
+tell application "System Events" to tell process "AcmeTasks"
   set out to ""
   repeat with mbi in menu bar items of menu bar 1
     repeat with mi in menu items of menu 1 of mbi
@@ -278,8 +279,8 @@ The sidecar keeps the evidence in `.md` form for downstream gates and synthesis 
 
 ```markdown
 # AX Snapshot: 001-main-window.png
-**Window:** Things — Today   **Captured:** <timestamp>
-- AXWindow "Things — Today" (0,25 1200x800)
+**Window:** Acme Tasks — Today   **Captured:** <timestamp>
+- AXWindow "Acme Tasks — Today" (0,25 1200x800)
   - AXSplitGroup
     - AXOutline (sidebar)
       - AXRow "Inbox" [selected=false]
@@ -295,7 +296,7 @@ The walk records role, title/value, enabled state, position, and size per elemen
 `window-inventory.md` mirrors `visual-exploration`'s `page-inventory.md`, one section per window:
 
 ```markdown
-## Window: Things — Today
+## Window: Acme Tasks — Today
 
 **Screenshot:** win-001-today.png (sidecar: win-001-today.ax.md)
 
@@ -348,7 +349,7 @@ Each `flow.md` uses the Step/Screenshot/Action/State/Feedback shape plus Behavio
 **Screenshot:** step-02-inbox.png (sidecar: step-02-inbox.ax.md)
 **Action:** none (arrival state)
 **State:** Inbox selected, content repopulated
-**Feedback:** Window title changed to "Things — Inbox"
+**Feedback:** Window title changed to "Acme Tasks — Inbox"
 
 ## Behavioral Claims
 
@@ -457,7 +458,7 @@ Every path above is written in-guest under `$GF_GUEST_WORKSPACE/runtime/...` and
 All claims from this skill use `source=visual-observation` with `agent=ui-observer`. The `ref` field is the screenshot path or the `.ax.md` sidecar path:
 
 ```markdown
-- The sidebar lists six standard destinations: Inbox, Today, Upcoming, Anytime, Someday, Logbook
+- The sidebar lists five standard destinations: Inbox, Today, Upcoming, Completed, Trash
   <!-- cite: source=visual-observation, ref=screenshots/win-001-today.ax.md, confidence=confirmed, agent=ui-observer -->
 ```
 

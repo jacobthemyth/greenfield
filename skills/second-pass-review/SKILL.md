@@ -155,7 +155,7 @@ This test catches everything: minified gibberish, internal function names, inter
 - Public library/tool names: `jq`, `ffmpeg`, `pandoc`
 - Standard tech names: `OAuth`, `PKCE`, `TLS`, `JWT`
 - IDE names: `PyCharm`, `GoLand`, `VSCode`
-- Platform-registered identifiers: URL schemes and command paths (things:///add), UTIs (public.utf8-plain-text), scripting-dictionary terms, Services menu names, keyboard shortcuts, documented defaults keys
+- Platform-registered identifiers: URL schemes and command paths (acmetasks:///add), UTIs (public.utf8-plain-text), scripting-dictionary terms, Services menu names, keyboard shortcuts, documented defaults keys
 
 For each file, report:
 1. PASS or FAIL

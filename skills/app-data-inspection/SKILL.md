@@ -102,13 +102,14 @@ Record these results before anything else:
 2. **Signature.** Read `workspace/raw/macos/bundle/signing.md`. Under `host-direct` a recorded PASS verdict is required — FAIL, UNKNOWN, or a missing file ⇒ record the gate and exit. Under `vm-tart`/`vm-lume` copy the `**Signature verdict:**` into your preflight table as data; it does not gate the run, because a bad signature inside a disposable VM costs a VM. Never self-verify as a substitute — the generic location strategy below covers only store location, never the signature verdict.
 3. **Store locations.** Locate every candidate data store.
 
-Location strategy — generic, with Things as the worked example, every command through `gf_exec`:
+Location strategy — every value comes from the bundle inventory, every command through `gf_exec`:
 
 ```bash
 # Primary: group container from the entitlements (see bundle signing.md)
 gf_exec 'ls -d ~/Library/Group\ Containers/'"$GROUP_ID"'*/ 2>/dev/null'
-# Things worked example — glob the per-install random suffix:
-DB=$(gf_exec 'ls ~/Library/Group\ Containers/JLMPQHK86H.com.culturedcode.ThingsMac/ThingsData-*/"Things Database.thingsdatabase"/main.sqlite 2>/dev/null' | head -1)
+# Glob for SQLite stores beneath it — vendors nest them under per-install random
+# suffixes and renamed directories, so never hardcode intermediate path segments:
+DB=$(gf_exec 'find ~/Library/Group\ Containers/'"$GROUP_ID"'* -name "*.sqlite" 2>/dev/null' | head -1)
 # Also check (each via gf_exec):
 #   ~/Library/Containers/$BUNDLE_ID/Data/Library/Application Support/
 #   ~/Library/Application Support/<app name>/
@@ -156,7 +157,7 @@ For each chosen SQLite store, record verbatim:
 - Per-table row counts (`SELECT count(*)`)
 - `PRAGMA user_version` and `PRAGMA schema_version` — record these explicitly as staleness anchors for incremental analysis: a later run compares them to detect schema drift without re-extracting everything
 
-**Worked-example caveat:** these schemas are undocumented and migration-scarred. Things' `TMTask` table has 41 columns, a polymorphic `type` column (0 = to-do, 1 = project, 2 = heading), a `status` column (0 = incomplete, 2 = canceled, 3 = completed), prefix artifacts like `rt1_` and `t2_` left by past migrations, and MIXED date encodings — REAL Unix epochs alongside INTEGER packed-bitfield dates. Do NOT assume epoch on integer date columns. Record structure verbatim at `confidence=confirmed`; every semantic interpretation starts at `confidence=assumed`.
+**Schema caveat:** these schemas are undocumented and migration-scarred. Expect wide tables (dozens of columns), polymorphic `type` columns (one table serving several entity kinds behind small integer codes), `status` enums with non-contiguous values, column-name prefix artifacts left by past migrations, and MIXED date encodings — REAL Unix epochs alongside INTEGER packed-bitfield dates in the same table. Do NOT assume epoch on integer date columns. Record structure verbatim at `confidence=confirmed`; every semantic interpretation starts at `confidence=assumed`.
 
 ### Phase 3: Entity and Lifecycle Inference
 
@@ -195,15 +196,16 @@ The precise key a control writes is recoverable by delta. After each single chan
 **Agent-driven mutation diffs.** This is the highest-value thing the skill does, and the read+write environment is what makes it possible. Bracket a single app-surface mutation with two reads and diff them. The mutation must go through an app surface — you may drive it yourself with `gf_gui` (a menu click, a keystroke into the running app), or it may come from `applescript-explorer` or `ui-observer` acting on the same environment — but it NEVER comes from writing the store directly, and it always earns a `dbq-log.md` note naming the surface and the action.
 
 ```bash
-# Baseline: full rows — synthetic data, nothing off-limits
-gf_exec 'sqlite3 "file:$DB?mode=ro" "SELECT * FROM TMTask ORDER BY uuid"' > .../mutation-diffs/state-before.txt
+# Baseline: full rows of the entity table under study ($TABLE, from the Phase 2
+# schema extraction) — synthetic data, nothing off-limits
+gf_exec 'sqlite3 "file:$DB?mode=ro" "SELECT * FROM $TABLE ORDER BY rowid"' > .../mutation-diffs/state-before.txt
 # Perform ONE app-surface mutation (drive it via gf_gui, or hand off to a sibling) — logged as a DBQ note
 gf_gui 'osascript -e "<one app-surface action>"'
 # After
-gf_exec 'sqlite3 "file:$DB?mode=ro" "SELECT * FROM TMTask ORDER BY uuid"' > .../mutation-diffs/state-after.txt
+gf_exec 'sqlite3 "file:$DB?mode=ro" "SELECT * FROM $TABLE ORDER BY rowid"' > .../mutation-diffs/state-after.txt
 diff state-before.txt state-after.txt > .../mutation-diffs/state-diff.txt   # decodes column semantics: assumed -> confirmed
 # Probe-scoped view of just the rows your corpus created:
-gf_exec 'sqlite3 "file:$DB?mode=ro" "SELECT * FROM TMTask WHERE title LIKE '\''GREENFIELD-PROBE-%'\''"'
+gf_exec 'sqlite3 "file:$DB?mode=ro" "SELECT * FROM $TABLE WHERE title LIKE '\''GREENFIELD-PROBE-%'\''"'
 ```
 
 One clean diff converts a column-semantics claim from `assumed` to `confirmed`: the mutation is the controlled input, the diff is the observed output. Three things keep the diff honest:
@@ -221,7 +223,7 @@ Every query or read operation gets a record ID: `DBQ-NNN` — three-digit zero-p
 ```markdown
 ## DBQ-014
 
-**Command:** sqlite3 "file:$DB?mode=ro" "SELECT type, count(*) FROM TMTask GROUP BY type"
+**Command:** sqlite3 "file:$DB?mode=ro" "SELECT type, count(*) FROM ZTASK GROUP BY type"
 **Target:** main.sqlite (group container)
 **Result:** 3 distinct type values: 0 (n=412), 1 (n=23), 2 (n=57)
 ```

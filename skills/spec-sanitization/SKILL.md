@@ -166,7 +166,7 @@ For identifiers recovered from native macOS app analysis, apply this decision ta
 
 | Identifier | Decision | Why |
 |-----------|----------|-----|
-| URL scheme, command paths, and parameters (`things:///add?title=...`) | PRESERVE | OS-registered; external callers depend on exact strings |
+| URL scheme, command paths, and parameters (`acmetasks:///add?title=...`) | PRESERVE | OS-registered; external callers depend on exact strings |
 | UTI strings (`public.utf8-plain-text`, vendor UTIs) | PRESERVE | Pasteboard/LaunchServices interop |
 | Document type extensions and roles | PRESERVE | File-handling contract |
 | sdef terminology (classes, commands, properties, enums) | PRESERVE | Public automation API; user scripts must keep working |
@@ -176,7 +176,7 @@ For identifiers recovered from native macOS app analysis, apply this decision ta
 | App-group IDs and bundle identifiers | ABSTRACT in behavioral specs; may appear only inside `platform-{os}.md` as original-app context | Tied to the vendor's developer account — a reimplementor cannot reuse them |
 | User-configurable defaults keys (settings UI, documented tweaks, read by other tools) | PRESERVE | Same rule as existing config-key examples |
 | Internal defaults keys (window frames, migration flags) | ABSTRACT | Internal state |
-| Internal SQLite schema (tables/columns, e.g. `TMTask`) | ABSTRACT names; PRESERVE semantics | See paragraph below |
+| Internal SQLite schema (tables/columns, e.g. `ZTASK`) | ABSTRACT names; PRESERVE semantics | See paragraph below |
 | XPC/mach service names, distributed-notification names | ABSTRACT unless external consumers evidenced | Same rule as IPC channel names |
 | Obj-C/Swift class names recovered from binaries | ABSTRACT | Internal code |
 
@@ -242,8 +242,8 @@ Concrete before/after examples for the sanitizer to follow.
 **After:** `Authentication validates the current token and refreshes it on failure`
 
 ### RP-13: Platform Identifiers
-**Before:** `Stores tasks in the TMTask table; adding via things:///add?title= creates a row`
-**After:** `Accepts new items via the things:///add URL command (title parameter, MUST); persists them in local storage with fields: title, status ∈ {open, completed, canceled}, ...`
+**Before:** `Stores tasks in the ZTASK table; adding via acmetasks:///add?title= creates a row`
+**After:** `Accepts new items via the acmetasks:///add URL command (title parameter, MUST); persists them in local storage with fields: title, status ∈ {open, completed, canceled}, ...`
 
 **Note:** This pattern applies PRESERVE and ABSTRACT in one sentence — the OS-registered URL command and its parameter are preserved exactly (platform contract), while the internal table name is abstracted with its data-model semantics kept.
 
