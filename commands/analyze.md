@@ -196,14 +196,14 @@ Layer 2: Synthesis          → analyzer × 3 roles (parallel), then synthesizer
 Layer 3: Deep Documentation → analyzer × 4 roles (deep-dive per module, behavior docs,
                               journeys, contracts)
          ↓
-Gate 1:  Verification       → analyzer as spec-verifier (remediation loop, up to 3 attempts)
+Gate 1:  Verification       → analyzer as spec-verifier (remediation by spec-remediator, up to 3 attempts)
          ↓
 Gate 1b: Source Completeness → analyzer × N (grep source for tools, env vars, flags, commands;
                                diff against specs; remediate gaps before proceeding)
          ↓
 Layer 4: Test & Validation  → analyzer × 3 roles (test vectors, test specs, acceptance criteria)
          ↓
-Gate 2:  Review             → analyzer as spec-reviewer (remediation loop, up to 3 attempts)
+Gate 2:  Review             → analyzer as spec-reviewer (remediation by spec-remediator, up to 3 attempts)
          ↓
 Decision Point:             → Ask user: stop here with raw specs, or sanitize?
          ↓ (only if user opts in)
@@ -403,9 +403,11 @@ Pre-flight dispatch count (Layers 1–4, before sanitization decision point):
   Layer 2 (Synthesis):       5 agents [deep]
   Layer 3 (Deep docs):       1 deep-dive per module (module count known
                              after Layer 2) + 3 cross-cutting roles [deep]
-  Gate 1 + Gate 1b:          2 agents + up to 3 remediation rounds each [deep]
+  Gate 1 + Gate 1b:          2 agents + up to 3 remediation rounds each.
+                             Gate 1 uses 1 spec-remediator per remediation round [deep]
   Layer 4 (Validation):      3 agents [standard]
-  Gate 2:                    1 agent + up to 3 remediation rounds [deep]
+  Gate 2:                    1 agent + up to 3 remediation rounds,
+                             1 spec-remediator per remediation round [deep]
 
   If you opt in to Layers 5–7 at the decision point after Gate 2:
     Layer 5 (Sanitization):   1 sanitizer per domain group + contamination
@@ -1327,9 +1329,9 @@ while [ $attempt -lt $max_attempts ]; do
   attempt=$((attempt + 1))
   echo "Gate 1 failed (attempt $attempt/$max_attempts). Remediating..."
 
-  # 1. Read the verification report
-  # 2. Fix each affected spec (the report specifies which file, section, and correction)
-  # 3. Re-run spec-verifier
+  # 1. Dispatch spec-remediator (see "Remediation dispatch" below). Do NOT edit specs yourself.
+  # 2. Commit its output
+  # 3. Re-run spec-verifier at its floor (a judge is not raised)
 
   if [ $attempt -ge $max_attempts ]; then
     echo "FATAL: Gate 1 failed after $max_attempts remediation attempts"
@@ -1337,6 +1339,14 @@ while [ $attempt -lt $max_attempts ]; do
   fi
 done
 ```
+
+### Remediation dispatch
+
+The orchestrator writes no spec text. For remediation attempt `N`, dispatch `greenfield:analyzer`:
+- Prompt: "Role: spec-remediator (Gate 1). Follow the **behavioral-spec-writing skill** and the **provenance-methodology skill**. Workspace: `<workspace-path>`. Read the verification report at `workspace/raw/specs/verification-report.md`. For each finding, read the spec file and the section that the finding names, and the evidence in `workspace/raw/` that the finding cites. Correct only the sections that the report names. Do not rewrite other sections. Do not renumber SPEC IDs. Keep a provenance citation on every changed claim. Write the list of changes to `workspace/raw/specs/remediation-gate-1-round-<N>.md`."
+- Model and effort: `greenfield-tiers lookup workspace spec-remediator <N-1>`
+- Dispatch record: `L3-spec-remediator.md` for attempt 1, then `L3-spec-remediator-2.md` and `L3-spec-remediator-3.md`
+- Commit: `[gate:spec-remediator] Gate 1 remediation round N`
 
 ```bash
 greenfield-tiers floor workspace 3 || { echo "BLOCKED: Gate 1 model floor failed (see 'Floor failures')"; exit 1; }
@@ -1497,9 +1507,9 @@ while [ $attempt -lt $max_attempts ]; do
   attempt=$((attempt + 1))
   echo "Gate 2 failed (attempt $attempt/$max_attempts). Remediating..."
 
-  # 1. Read the review notes
-  # 2. Fix each flagged issue
-  # 3. Re-run spec-reviewer
+  # 1. Dispatch spec-remediator (see "Remediation dispatch" below). Do NOT edit specs yourself.
+  # 2. Commit its output
+  # 3. Re-run spec-reviewer at its floor (a judge is not raised)
 
   if [ $attempt -ge $max_attempts ]; then
     echo "FATAL: Gate 2 failed after $max_attempts remediation attempts"
@@ -1507,6 +1517,14 @@ while [ $attempt -lt $max_attempts ]; do
   fi
 done
 ```
+
+### Remediation dispatch
+
+The orchestrator writes no spec text. For remediation attempt `N`, dispatch `greenfield:analyzer`:
+- Prompt: "Role: spec-remediator (Gate 2). Follow the **behavioral-spec-writing skill**, the **validation-methodology skill**, and the **provenance-methodology skill**. Workspace: `<workspace-path>`. Read the review notes at `workspace/raw/specs/review-notes.md`. For each finding, read the spec file and the section that the finding names, and the evidence in `workspace/raw/` that the finding cites. Correct only the files and the sections that the notes name. Do not rewrite other sections. Do not renumber SPEC IDs. Keep a provenance citation on every changed claim. Write the list of changes to `workspace/raw/specs/remediation-gate-2-round-<N>.md`."
+- Model and effort: `greenfield-tiers lookup workspace spec-remediator <N-1>`
+- Dispatch record: `L4-spec-remediator.md` for attempt 1, then `L4-spec-remediator-2.md` and `L4-spec-remediator-3.md`
+- Commit: `[gate:spec-remediator] Gate 2 remediation round N`
 
 ```bash
 greenfield-tiers floor workspace 4 || { echo "BLOCKED: Gate 2 model floor failed (see 'Floor failures')"; exit 1; }
