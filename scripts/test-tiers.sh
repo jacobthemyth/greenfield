@@ -90,5 +90,45 @@ printf '**Dispatched:** 2026-01-01T12:00:00Z\n**Scope:** full\n' > "$old/provena
 run init "$old"
 ok "init baseline"          grep -qx "L1-doc-researcher.md" "$old/provenance/model-tiers-baseline.txt"
 
+floor_one() {  # floor_one <fixture>: a workspace with one Layer 1 record
+  ws=$(mkws); put "$ws" "$1" L1-chunk-analyzer.md; run floor "$ws" 1
+}
+
+floor_one at-floor.md
+ok "floor at floor"         [ "$RC" = 0 ] && ok "floor pass line" has "PASS L1-chunk-analyzer.md chunk-analyzer opus/high"
+ok "floor summary pass"     has "FLOOR L1: PASS"
+floor_one below-model.md
+ok "floor below model"      [ "$RC" = 1 ] && ok "below model text" has "FAIL L1-chunk-analyzer.md: model sonnet is below the floor opus for chunk-analyzer"
+ok "floor summary fail"     has "FLOOR L1: FAIL"
+floor_one below-effort.md
+ok "floor below effort"     [ "$RC" = 1 ] && ok "below effort text" has "effort medium is below the floor high for chunk-analyzer"
+floor_one no-model-line.md
+ok "floor missing line"     [ "$RC" = 1 ] && ok "missing text" has "missing **Model:** line"
+floor_one above-raised-no.md
+ok "floor raised no"        [ "$RC" = 1 ] && ok "raised no text" has "above the floor but **Raised:** is no"
+floor_one above-raised-yes.md
+ok "floor raised yes"       [ "$RC" = 0 ]
+floor_one unknown-model.md
+ok "floor unknown model"    [ "$RC" = 1 ] && ok "unknown model text" has "unknown model 'claude-opus-5-5'"
+floor_one prompt-quotes-model.md      # Review Focus 3
+ok "floor prompt quote"     [ "$RC" = 0 ] && ok "prompt quote line" has "PASS L1-chunk-analyzer.md chunk-analyzer opus/high"
+
+ws=$(mkws); run floor "$ws" 1
+ok "floor no records"       [ "$RC" = 1 ] && ok "no records text" has "FAIL L1: no dispatch records"
+
+ws=$(mkws); put "$ws" at-floor.md L2-chunk-analyzer.md; put "$ws" below-model.md L1-chunk-analyzer.md
+run floor "$ws" 2;          ok "floor reads own layer" [ "$RC" = 0 ]
+
+ws=$(mkws); put "$ws" below-model.md L1-chunk-analyzer.md; put "$ws" supersedes-below.md L1-chunk-analyzer-2.md
+run floor "$ws" 1
+ok "floor superseded"       [ "$RC" = 0 ] && ok "superseded text" has "SKIP L1-chunk-analyzer.md: superseded by L1-chunk-analyzer-2.md"
+
+ws=$(mkws); put "$ws" no-model-line.md L1-doc-researcher.md; put "$ws" at-floor.md L1-chunk-analyzer.md
+echo "L1-doc-researcher.md" > "$ws/provenance/model-tiers-baseline.txt"
+run floor "$ws" 1
+ok "floor baseline"         [ "$RC" = 0 ] && ok "baseline text" has "SKIP L1-doc-researcher.md: predates model tiers"
+
+run floor "$ws" 8;          ok "floor bad layer"       [ "$RC" = 2 ]
+
 echo "test-tiers: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

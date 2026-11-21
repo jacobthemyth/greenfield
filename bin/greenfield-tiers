@@ -165,13 +165,153 @@ cmd_lookup() {
   fi
 }
 
+# Print the value of the first "**<key>:**" line above the first line that
+# starts with three backticks. Return 1 if there is no such line.
+header_value() {
+  local line prefix="**$2:**"
+  while IFS= read -r line; do
+    line=${line%$'\r'}
+    case "$line" in
+      '```'*) return 1 ;;
+      "$prefix"*)
+        line=${line#"$prefix"}
+        line=${line#"${line%%[![:space:]]*}"}
+        line=${line%"${line##*[![:space:]]}"}
+        printf '%s\n' "$line"
+        return 0
+        ;;
+    esac
+  done <"$1"
+  return 1
+}
+
+# Print the base name of the record in directory $2 that names $1 in its
+# **Supersedes:** header. Return 1 if none does.
+superseded_by() {
+  local name=$1 dir=$2 other base sup s
+  for other in "$dir"/*.md; do
+    [ -e "$other" ] || continue
+    base=$(basename "$other")
+    [ "$base" = "$name" ] && continue
+    sup=$(header_value "$other" Supersedes) || continue
+    for s in ${sup//,/ }; do
+      if [ "$s" = "$name" ]; then
+        echo "$base"
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+
+# Check one record against its role floor. Print one SKIP, FAIL, or PASS line.
+# Return 1 if the line is FAIL. Args: <rows> <dir> <baseline file> <record>
+floor_check_record() {
+  local rows=$1 dir=$2 baseline=$3 rec=$4
+  local name role model effort raised key other
+  name=$(basename "$rec")
+
+  if [ -f "$baseline" ] && grep -qxF "$name" <(tr -d '\r' <"$baseline"); then
+    echo "SKIP $name: predates model tiers"
+    return 0
+  fi
+  if other=$(superseded_by "$name" "$dir"); then
+    echo "SKIP $name: superseded by $other"
+    return 0
+  fi
+
+  for key in Role Model Effort Raised; do
+    if ! header_value "$rec" "$key" >/dev/null; then
+      echo "FAIL $name: missing **$key:** line"
+      return 1
+    fi
+  done
+  role=$(header_value "$rec" Role)
+  model=$(header_value "$rec" Model)
+  effort=$(header_value "$rec" Effort)
+  raised=$(header_value "$rec" Raised)
+
+  local tier pair fmodel feffort
+  if ! tier=$(role_tier "$rows" "$role"); then
+    echo "FAIL $name: unknown role '$role'"
+    return 1
+  fi
+  pair=$(tier_pair "$rows" "$tier")
+  fmodel=${pair% *}
+  feffort=${pair#* }
+
+  local mr er fmr fer
+  if ! mr=$(model_rank "$model"); then
+    echo "FAIL $name: unknown model '$model'"
+    return 1
+  fi
+  if ! er=$(effort_rank "$effort"); then
+    echo "FAIL $name: unknown effort '$effort'"
+    return 1
+  fi
+  fmr=$(model_rank "$fmodel")
+  fer=$(effort_rank "$feffort")
+  if [ "$mr" -lt "$fmr" ]; then
+    echo "FAIL $name: model $model is below the floor $fmodel for $role"
+    return 1
+  fi
+  if [ "$er" -lt "$fer" ]; then
+    echo "FAIL $name: effort $effort is below the floor $feffort for $role"
+    return 1
+  fi
+  case "$raised" in
+    no | "yes: "?*) ;;
+    *)
+      echo "FAIL $name: **Raised:** must be 'no' or 'yes: <reason>'"
+      return 1
+      ;;
+  esac
+  if [ "$raised" = no ] && { [ "$mr" -gt "$fmr" ] || [ "$er" -gt "$fer" ]; }; then
+    echo "FAIL $name: above the floor but **Raised:** is no"
+    return 1
+  fi
+  echo "PASS $name $role $model/$effort"
+  return 0
+}
+
+cmd_floor() {
+  [ $# -eq 2 ] || die 2 "usage: greenfield-tiers floor <workspace> <layer>"
+  local ws=$1 layer=$2
+  case "$layer" in
+    [1-7]) ;;
+    *) die 2 "layer must be a number from 1 to 7" ;;
+  esac
+  local f rows
+  f=$(ws_tiers "$ws") || exit $?
+  rows=$(load_tiers "$f") || exit $?
+  local dir="$ws/provenance/dispatch"
+  local baseline="$ws/provenance/model-tiers-baseline.txt"
+  local rec found=0 failed=0
+  for rec in "$dir"/L"$layer"-*.md; do
+    [ -e "$rec" ] || continue
+    found=1
+    floor_check_record "$rows" "$dir" "$baseline" "$rec" || failed=1
+  done
+  if [ "$found" -eq 0 ]; then
+    echo "FAIL L$layer: no dispatch records"
+    failed=1
+  fi
+  if [ "$failed" -eq 0 ]; then
+    echo "FLOOR L$layer: PASS"
+    return 0
+  fi
+  echo "FLOOR L$layer: FAIL"
+  return 1
+}
+
 main() {
-  [ $# -ge 1 ] || die 2 "usage: greenfield-tiers <init|lookup> ..."
+  [ $# -ge 1 ] || die 2 "usage: greenfield-tiers <init|lookup|floor> ..."
   local sub=$1
   shift
   case "$sub" in
     init) cmd_init "$@" ;;
     lookup) cmd_lookup "$@" ;;
+    floor) cmd_floor "$@" ;;
     *) die 2 "unknown subcommand: $sub" ;;
   esac
 }
