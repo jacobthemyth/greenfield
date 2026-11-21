@@ -364,6 +364,7 @@ git commit -m "feat(tiers): apply the floor rule to dispatch records"
   - `WARN <record>: no session log`
   - `WARN <record>: no agent_runs entry`
   - `WARN <log>: model ID '<id>' names no known alias`
+  - `WARN <record>: agent_runs role '<r>' is not in the tier file`
   - `WARN L<layer>: jq is not installed, session logs not compared`
 - Produces: with `GREENFIELD_NO_JQ=1` in the environment, the tool acts as it does without `jq`.
 
@@ -431,7 +432,7 @@ Run the second pass after the first pass, for each record that the first pass di
 - [ ] **Step 5: Run the tests and see them pass**
 
 Run: `scripts/test-tiers.sh`
-Expected: `test-tiers: 62 passed, 0 failed` on a machine with `jq`.
+Expected: `test-tiers: 64 passed, 0 failed` on a machine with `jq`.
 
 - [ ] **Step 6: Commit**
 
@@ -518,7 +519,7 @@ Take the first `major.minor.patch` number from the version text. Compare the thr
 - [ ] **Step 4: Run the tests and see them pass**
 
 Run: `scripts/test-tiers.sh`
-Expected: `test-tiers: 83 passed, 0 failed` on a machine with `jq`.
+Expected: `test-tiers: 85 passed, 0 failed` on a machine with `jq`.
 
 - [ ] **Step 5: Commit**
 
@@ -1064,7 +1065,7 @@ Add `spec-remediator` after `spec-verifier` in the analyzer role list under "How
 - [ ] **Step 3: Run the lint and the tests**
 
 Run: `scripts/lint-tiers.sh && scripts/test-tiers.sh`
-Expected: `LINT OK`, then `test-tiers: 83 passed, 0 failed`.
+Expected: `LINT OK`, then `test-tiers: 85 passed, 0 failed`.
 
 - [ ] **Step 4: Commit**
 

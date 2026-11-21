@@ -182,6 +182,7 @@ The second pass reads each `agent_runs` entry whose `dispatch_record` has the pr
 - If any such model is weaker than the floor model of the role, the result is FAIL.
 - If the entry has no session log, or `jq` is not installed, the result is WARN.
 - If a model ID names no known alias, the result is WARN.
+- If the tier file does not list the role of an entry, the result is WARN.
 
 The second pass exists because Claude Code can replace a blocked model with a fallback model and report no error. The session log holds a full model ID, such as `claude-opus-5-5`. The tool maps an ID to an alias by the alias name inside the ID. The session log does not give a reliable effort level, so the second pass compares only the model.
 
