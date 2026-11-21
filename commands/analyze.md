@@ -184,6 +184,8 @@ workspace/
 
 All agents are dispatched as `greenfield:analyzer` (or `greenfield:sanitizer` for Layer 5) with role-specific prompts. Each prompt specifies the role, which skill to follow, inputs, outputs, and DOD.
 
+Each dispatch takes its model and effort from the tier file (see **Model and effort**), never from the session model.
+
 ```
 Workspace Init              → workspace/ (git init, directory structure, workspace.json)
          ↓
@@ -254,6 +256,16 @@ esac
 # If workspace does not exist, create fresh
 ```
 
+### Model override preflight
+
+```bash
+greenfield-tiers preflight
+```
+
+If the command exits with status 3, stop and show its output to the user. Ask whether to end the run or to continue. If the user continues, append the output and the answer to `provenance/audit-log.md` after Step 1 creates the workspace.
+
+If the shell cannot find `greenfield-tiers`, stop with exit code 1. The plugin `bin/` directory is not on the PATH.
+
 ---
 
 ## Step 1: Workspace Initialization
@@ -272,6 +284,10 @@ cd "$WORKSPACE"
 # Read workspace.json for original configuration (target path, excluded types, etc.)
 # Read agent_runs to find last completed agent
 # Read current_layer to know where we are in the pipeline
+
+# Copy the model tier file (a workspace copy that exists is kept)
+greenfield-tiers init .
+
 # Skip all completed steps
 # Resume from the first incomplete step
 
@@ -321,6 +337,9 @@ find . -type d -empty -not -path './.git/*' -exec touch {}/.gitkeep \;
 
 # Write .gitignore (container build artifacts, large binaries, temp files, OS/editor artifacts, node_modules)
 
+# Copy the model tier file (a workspace copy that exists is kept)
+greenfield-tiers init .
+
 # Initial commit
 git add -A
 git commit -m "[init] Create analysis workspace for <target-name>"
@@ -358,42 +377,42 @@ Compute the count from the negotiated inventory. The bundle-splitter's chunk cou
 Pre-flight dispatch count (Layers 1–4, before sanitization decision point):
 
   Layer 1 (Intelligence)
-    - 1 discovery agent (already ran)
+    - 1 discovery agent (already ran) [standard]
     - Per approved source type:
         source       1 bundle-splitter + 1 per chunk (count known after
-                     splitting) + 1 function-analyzer (Haiku)
-        docs         1 doc-researcher
-        community    1 community-analyst
-        sdk          1–2 agents
+                     splitting) + 1 function-analyzer [standard + light]
+        docs         1 doc-researcher [standard]
+        community    1 community-analyst [light]
+        sdk          1–2 agents [light]
         runtime      4 agents (cli-explorer, web-ui-explorer,
-                     behavior-observer, ux-documenter)
-        binary       2 agents (surveyor + deep-analyzer)
-        git-history  1 agent
-        tests        1–2 agents
-        visual       1 agent
-        contracts    1 agent
-        macos-bundle 1 agent (bundle-inspector)
+                     behavior-observer, ux-documenter) [standard]
+        binary       2 agents (surveyor + deep-analyzer) [standard + light]
+        git-history  1 agent [light]
+        tests        1–2 agents [standard + light]
+        visual       1 agent [standard]
+        contracts    1 agent [light]
+        macos-bundle 1 agent (bundle-inspector) [standard]
         macos-runtime 2 agents (applescript-explorer, ui-observer) —
-                     pending the Runtime Environment Gate
+                     pending the Runtime Environment Gate [standard]
         app-data     1 agent (data-inspector) — pending
-                     the Runtime Environment Gate
+                     the Runtime Environment Gate [standard]
                      NOTE: a VM environment (vm-tart/vm-lume) adds a one-time
                      provisioning step — a first-use image pull of tens of
                      minutes and tens of GB — that is NOT an agent dispatch and
                      is not counted here.
-  Layer 2 (Synthesis):       5 agents
+  Layer 2 (Synthesis):       5 agents [deep]
   Layer 3 (Deep docs):       1 deep-dive per module (module count known
-                             after Layer 2) + 3 cross-cutting roles
-  Gate 1 + Gate 1b:          2 agents + up to 3 remediation rounds each
-  Layer 4 (Validation):      3 agents
-  Gate 2:                    1 agent + up to 3 remediation rounds
+                             after Layer 2) + 3 cross-cutting roles [deep]
+  Gate 1 + Gate 1b:          2 agents + up to 3 remediation rounds each [deep]
+  Layer 4 (Validation):      3 agents [standard]
+  Gate 2:                    1 agent + up to 3 remediation rounds [deep]
 
   If you opt in to Layers 5–7 at the decision point after Gate 2:
     Layer 5 (Sanitization):   1 sanitizer per domain group + contamination
-                              judges (batched 4–5 files each)
+                              judges (batched 4–5 files each) [deep]
     Layer 6 (Second-Pass):    3 semantic reviewers + deep-read auditors
-                              (batched 4–5 files each)
-    Layer 7 (Fidelity):       fidelity validators (batched 4–5 modules each)
+                              (batched 4–5 files each) [deep]
+    Layer 7 (Fidelity):       fidelity validators (batched 4–5 modules each) [deep]
 
   Token usage, dollar cost, and wall-clock depend on target size,
   language, source quality, and how many remediation rounds the gates
@@ -419,7 +438,7 @@ For each role listed below:
    - `subagent_type`: `"greenfield:analyzer"`
    - `prompt`: Include the **role**, which **skill** to follow, the workspace absolute path, what to read, what to produce, and where to write.
    - `description`: Short label for the task (shown in UI)
-   - `model`: Override to `"haiku"` only for function-analyzer role (high-volume, simple extraction)
+   - `model` and `effort`: the two values that `greenfield-tiers lookup` prints for the role (see **Model and effort** below). Pass both on every dispatch.
 
 2. **After the agent returns**, commit its output:
    ```bash
@@ -428,7 +447,45 @@ For each role listed below:
    git commit -m "<commit-message>"
    ```
 
-3. **Parallel dispatch with batching**: When multiple agents in the same phase have no dependencies on each other, dispatch them in a single message with multiple Agent tool calls — BUT cap the batch size at **4 parallel agents**. Firing 20+ agents in a single parallel burst is a reliable way to hit the Opus rate limit mid-pipeline. Wait for each batch of 4 to complete, commit its output, then dispatch the next batch of 4. This applies to chunk-analyzers (Layer 1), deep-dive analyzers (Layer 3), contamination judges (Layer 5 verification), deep-read auditors (Layer 6 Phase 2), and fidelity batches (Layer 7). If the runtime exposes remaining-quota info, prefer a dynamic batch size; otherwise stick to 4.
+3. **Parallel dispatch with batching**: When multiple agents in the same phase have no dependencies on each other, dispatch them in a single message with multiple Agent tool calls — BUT cap the batch size at **4 parallel agents**. Firing 20+ agents in a single parallel burst is a reliable way to hit a per-model rate limit mid-pipeline. Wait for each batch of 4 to complete, commit its output, then dispatch the next batch of 4. This applies to chunk-analyzers (Layer 1), deep-dive analyzers (Layer 3), contamination judges (Layer 5 verification), deep-read auditors (Layer 6 Phase 2), and fidelity batches (Layer 7). If the runtime exposes remaining-quota info, prefer a dynamic batch size; otherwise stick to 4.
+
+### Model and effort
+
+Each role has a floor: the weakest model and effort that the role can run on. The floors are in `workspace/provenance/model-tiers.tsv`. Do not select a model from memory. Do not let a dispatch inherit the session model.
+
+Before every Agent call, run:
+
+```bash
+greenfield-tiers lookup workspace <role>
+```
+
+The command prints two words, for example `opus high`. Pass the first word as `model` and the second word as `effort`. If the command fails, do not dispatch the role. A role that the tier file does not list has no floor.
+
+### Raise rule
+
+If you dispatch a role again for the same work because its output was deficient, raise the dispatch. Deficient output is a gate failure, missing output, or partial output. Pass the count of earlier deficient rounds as the last argument:
+
+```bash
+greenfield-tiers lookup workspace <role> 1    # round 2
+greenfield-tiers lookup workspace <role> 2    # round 3
+```
+
+The command stops at the ceiling. Never dispatch below the floor.
+
+Do not raise in these two cases. Use the values of the earlier round.
+
+- The cause is the environment: the wallpaper failure (Tier 3.7), a lost VM, or a TCC denial.
+- A gate judge runs again after a remediation. Its earlier output was correct. Raise the role that wrote the deficient output.
+
+### Model not available
+
+If an Agent call fails because the account cannot use the model, stop and ask the user for a substitute. Never select a weaker model yourself. If the user approves a substitute, record it, then run `lookup` again:
+
+```bash
+greenfield-tiers substitute workspace <tier> <model> <effort> "<reason>"
+```
+
+Print each substitute in the final summary.
 
 ### Dispatch record
 
@@ -436,13 +493,17 @@ For each role listed below:
 
 Why this exists: in a real run, an agent's output referred to a narrowed "Part 1" scope that appears nowhere in the workspace. Nothing on disk could say whether the orchestrator had handed that agent a trimmed assignment or whether the agent had simply done a fraction of the work it was given. "The instructions were narrowed" and "the agent underperformed" are the same evidence after the fact, and they call for opposite fixes. The prompt as sent is the only artifact that separates them, and it costs one file write.
 
-Format — four header lines, then the prompt in a fence:
+Format — eight header lines, then the prompt in a fence:
 
 ````markdown
 **Dispatched:** 2026-01-01T12:00:00Z
 **Subagent:** greenfield:analyzer
 **Round:** 1
 **Scope:** full
+**Role:** chunk-analyzer
+**Model:** opus
+**Effort:** high
+**Raised:** no
 
 ```text
 <the prompt string passed to the Agent tool, byte-for-byte>
@@ -454,6 +515,11 @@ Format — four header lines, then the prompt in a fence:
 - **Remediation rounds append, never overwrite.** Round 2 of `ui-observer` is written to `L1-ui-observer-2.md`, round 3 to `L1-ui-observer-3.md`. The round-1 file stays exactly as it was sent — overwriting it destroys the comparison the record exists to make.
 - Filenames use the role name as spelled in this command: `L1-ui-observer.md`, `L1-applescript-explorer.md`, `L1-data-inspector.md`, `L2-module-mapper.md`, `L3-deep-dive-<module>.md`, and so on. Parallel batches get one file per agent, not one per batch.
 - The record is committed with the agent's output in the same commit.
+- `**Role:**` is the role name as the tier file spells it.
+- `**Model:**` and `**Effort:**` are the two values that you pass on the Agent call.
+- `**Raised:**` is `no` at the floor, and `yes: <reason>` above the floor.
+- `**Supersedes:** <record filename>` is an optional ninth line. Add it only if this dispatch repeats the full work of an earlier dispatch and replaces its output.
+- Fixed prefixes: `discovery-agent` uses `L1-`. Gate 1, Gate 1b, and their remediation use `L3-`. Gate 2 and its remediation use `L4-`.
 
 ### Session capture
 
@@ -506,7 +572,7 @@ For each chunk from the manifest, dispatch `greenfield:analyzer`:
 
 **Step 3: function-analyzer**
 
-Dispatch `greenfield:analyzer` with `model: "haiku"`:
+Dispatch `greenfield:analyzer`:
 - Prompt: "Role: function-analyzer. Follow the **source-analysis skill** Phase 7. Workspace: `<workspace-path>`. Read all chunk analyses in `workspace/raw/source/analysis/` and the source files they reference. Extract function-level analysis. Write to `workspace/raw/source/functions/`."
 - Commit: `[L1:function-analyzer] Extract function-level analysis`
 
@@ -1498,8 +1564,10 @@ The sanitization is the most critical step in the pipeline. It MUST produce spec
 Because specs are large, dispatch one `greenfield:sanitizer` per domain group (4-5 raw module specs → 1 output domain spec). This keeps each agent's context manageable.
 
 For each domain group, dispatch `greenfield:sanitizer`:
-- Prompt: "Workspace: `<workspace-path>`. Follow the **spec-sanitization skill**, especially the Rewrite Rule and the External System Exception. Read these raw specs: [list of raw module spec paths]. Understand the behaviors they describe. Then WRITE a fresh output domain spec to `workspace/output/specs/domains/<domain-name>.md`. Do NOT copy text from raw specs — rewrite every sentence from your understanding. The output specs must contain ONLY: behavioral descriptions, user-facing identifiers (env vars, CLI flags, config keys, API fields, protocol constants), and numeric constants. No function names, no variable names, no minified identifiers, no internal feature flags, no telemetry event names, no source paths, no provenance citations. **Exception:** External system contracts (database schemas, third-party API fields, external CLI tool flags, imposed file formats) document systems the app does not own — preserve their details as behavioral constraints. The test: could someone read this spec with zero access to the source code and understand every word?"
+- Prompt: "Role: sanitizer. Workspace: `<workspace-path>`. Follow the **spec-sanitization skill**, especially the Rewrite Rule and the External System Exception. Read these raw specs: [list of raw module spec paths]. Understand the behaviors they describe. Then WRITE a fresh output domain spec to `workspace/output/specs/domains/<domain-name>.md`. Do NOT copy text from raw specs — rewrite every sentence from your understanding. The output specs must contain ONLY: behavioral descriptions, user-facing identifiers (env vars, CLI flags, config keys, API fields, protocol constants), and numeric constants. No function names, no variable names, no minified identifiers, no internal feature flags, no telemetry event names, no source paths, no provenance citations. **Exception:** External system contracts (database schemas, third-party API fields, external CLI tool flags, imposed file formats) document systems the app does not own — preserve their details as behavioral constraints. The test: could someone read this spec with zero access to the source code and understand every word?"
 - Commit: `[L5:spec-sanitizer] Rewrite <domain-name> domain spec to output/`
+
+Every sanitizer prompt in Layers 5, 6, and 7 starts with `Role: sanitizer.`
 
 Similarly dispatch sanitizers for:
 - External contracts (cli, environment, configuration, behavioral-integration) → `output/specs/contracts/`
@@ -1579,7 +1647,7 @@ After Phase 1 completes (regardless of PASS/FAIL), dispatch deep-read auditors. 
 Batch the output specs files into groups of 4-5 and dispatch one `greenfield:analyzer` per batch:
 
 **deep-read-auditor** (one per batch) → `greenfield:analyzer`:
-- Prompt: "Role: deep-read auditor (Layer 6, Phase 2). Follow the **second-pass-review skill** Deep Contextual Audit Protocol. Workspace: `<workspace-path>`. Read these files END TO END: `workspace/output/specs/domains/<file1>.md`, `workspace/output/specs/domains/<file2>.md`, ... For every identifier, name, or reference, apply the test: would an implementor encounter this exact string without seeing the source code? If not, it is contamination. Write findings to `workspace/raw/audit/deep-read-batch-N.md`. Do NOT read `workspace/raw/`."
+- Prompt: "Role: deep-read-auditor (Layer 6, Phase 2). Follow the **second-pass-review skill** Deep Contextual Audit Protocol. Workspace: `<workspace-path>`. Read these files END TO END: `workspace/output/specs/domains/<file1>.md`, `workspace/output/specs/domains/<file2>.md`, ... For every identifier, name, or reference, apply the test: would an implementor encounter this exact string without seeing the source code? If not, it is contamination. Write findings to `workspace/raw/audit/deep-read-batch-N.md`. Do NOT read `workspace/raw/`."
 - Dispatch all batches in parallel
 - Commit: `[L6:deep-read-auditor] Deep-read audit batch N - PASS|FAIL`
 
@@ -1792,6 +1860,7 @@ git tag -a fidelity-check-complete -m "Layer 7: Fidelity validation passed (N cl
 | Agent produces no output | Log warning, continue. Quality gates will catch the gap. |
 | Agent produces partial output | Commit partial output. Flag for review. Continue. |
 | Gate fails | Remediate up to 3 times. If still failing, abort with exit code 1. |
+| Model not available for a dispatch | Stop and ask the user for a substitute. Record it with `greenfield-tiers substitute`. Never select a weaker model without the user. |
 | Container build/crash | Log error. Mark runtime mode as unavailable/degraded. Continue with other modes. |
 | macOS permission denied (TCC) in the runtime environment | Re-run TCC provisioning in the environment, then the VNC manual grant; if still denied, degrade per the preflight doctor matrix (drop screenshots / drop role / exclude source type). Continue with remaining sources. |
 | Runtime environment unavailable or lost | Mark `macos-runtime` and `app-data` excluded. Continue with remaining sources. |
