@@ -49,6 +49,8 @@ If `preflight` exits with status 3, stop and show its output to the user. Ask wh
 greenfield-tiers init "$ARGUMENTS"
 ```
 
+If the shell cannot find `greenfield-tiers`, stop with exit code 1.
+
 ## PHASE 2: Public Source Pass-Through
 
 Public artifacts contain no implementation details and pass through without modification:
@@ -83,7 +85,9 @@ Before every Agent call in this command, run:
 greenfield-tiers lookup "$ARGUMENTS" <role>
 ```
 
-Pass the first word as `model` and the second word as `effort`. Do not let a dispatch inherit the session model. If a role runs again because its output failed, pass the count of earlier failed rounds as the last argument.
+Pass the first word as `model` and the second word as `effort`. Do not let a dispatch inherit the session model. If a role runs again because its output failed, pass the count of earlier failed rounds as the last argument. A contamination judge that runs again after a re-sanitization is not raised. Its earlier verdict was correct.
+
+If an Agent call fails because the account cannot use the model, stop and ask the user for a substitute. Never select a weaker model yourself. Record an approved substitute with `greenfield-tiers substitute "$ARGUMENTS" <tier> <model> <effort> "<reason>"`.
 
 Before every Agent call, write the prompt to `$ARGUMENTS/provenance/dispatch/L5-<role>-<n>.md` with these header lines above the fenced prompt:
 
@@ -142,7 +146,7 @@ Acceptance criteria and test vectors also need sanitization:
 find $ARGUMENTS/raw/specs/validation/ -name '*.md' -type f
 ```
 
-For each validation artifact:
+For each validation artifact, dispatch `greenfield:sanitizer` with a prompt that starts `Role: sanitizer.` The prompt tells the agent to do these steps:
 - Strip raw `ref` paths from provenance citations
 - Preserve Given/When/Then structure
 - Preserve AC IDs (AC-{MODULE}-{NNN})

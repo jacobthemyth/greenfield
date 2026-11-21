@@ -357,6 +357,8 @@ Dispatch `greenfield:analyzer`:
 - Prompt: "Role: discovery-agent. Follow the **autonomous-discovery skill**. Target: `<target-path>`. Workspace: `<workspace-path>`. Excluded types: `<--exclude value or 'none'>`. Probe the target for all available intelligence sources: source code, documentation, SDK/package presence, community content, runtime executability, binary artifacts, git history, test suites, visual UI, machine-readable contracts, macOS app bundles (static bundle facts), host-observable macOS runtime, and application data stores. If the target is a macOS `.app` bundle (or a URL that resolves to an installed app via Spotlight), additionally probe per the autonomous-discovery skill Phase 1.8: bundle facts, code signature, scripting dictionary presence, and conventional data locations — passive checks only, never launch the app or read its data containers. Write an inventory to `workspace/inventory.md` listing each source type, its availability (available/unavailable/excluded), and a brief rationale."
 - Commit: `[L1:discovery] Intelligence source inventory`
 
+This dispatch follows the Agent Dispatch Protocol below: run `greenfield-tiers lookup` for `discovery-agent`, and write the record `L1-discovery-agent.md` before the call.
+
 ### 2b: Present inventory for negotiation
 
 After the discovery agent returns, read `workspace/inventory.md` and present the inventory to the user. The user may approve the plan, exclude additional sources, or override unavailability judgments. Update `workspace/inventory.md` with the negotiated plan and commit:
@@ -461,7 +463,7 @@ Before every Agent call, run:
 greenfield-tiers lookup workspace <role>
 ```
 
-The command prints two words, for example `opus high`. Pass the first word as `model` and the second word as `effort`. If the command fails, do not dispatch the role. A role that the tier file does not list has no floor.
+The command prints two words, for example `opus high`. Pass the first word as `model` and the second word as `effort`. If the command fails, do not dispatch the role. A role that the tier file does not list has no floor. `lookup` fails for it, so do not dispatch it.
 
 ### Raise rule
 
@@ -494,6 +496,8 @@ Print each substitute in the final summary.
 Every gate runs `greenfield-tiers floor workspace <layer>`. A FAIL line fails the gate. A WARN line does not.
 
 - If a dispatch record fails, dispatch the role again for the same full scope at the `lookup` values. Add `**Supersedes:** <failed record filename>` to the new record. Discard the output of the earlier dispatch.
+- A superseding dispatch runs at the floor values: run `lookup` with no steps. A floor failure is not deficient output, so the raise rule does not apply.
+- If a substitute lowered a tier after some dispatches of the layer ran, the earlier records of that layer can FAIL as above the floor with **Raised:** no. In that case, stop and ask the user. Do not repeat the work.
 - If a session log fails, Claude Code ran a weaker model than the dispatch named. Stop and ask the user, as in **Model not available**.
 - Never edit or delete a dispatch record to clear a FAIL line.
 - Print each WARN line in the final summary.
@@ -531,6 +535,7 @@ Format — eight header lines, then the prompt in a fence:
 - `**Raised:**` is `no` at the floor, and `yes: <reason>` above the floor.
 - `**Supersedes:** <record filename>` is an optional ninth line. Add it only if this dispatch repeats the full work of an earlier dispatch and replaces its output.
 - Fixed prefixes: `discovery-agent` uses `L1-`. Gate 1, Gate 1b, and their remediation use `L3-`. Gate 2 and its remediation use `L4-`.
+- The prefix is the layer whose gate runs next after the dispatch, not the layer where the role first ran. Examples: a sanitizer remediation in Layer 6 uses `L6-`, and one in Layer 7 uses `L7-`. A Layer 6 deep-read audit that Layer 7 runs again uses `L7-`. A Gate 1b observer re-dispatch uses `L3-`.
 
 ### Session capture
 
@@ -542,7 +547,7 @@ CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 SESSION_JSONL=$(find "$CLAUDE_DIR/projects" -path "*/subagents/agent-${AGENT_ID}.jsonl" 2>/dev/null | head -1)
 
 if [ -n "$SESSION_JSONL" ]; then
-  cp "$SESSION_JSONL" workspace/provenance/sessions/<agent-name>-<short-id>.jsonl
+  cp "$SESSION_JSONL" "workspace/provenance/sessions/<role>-${AGENT_ID:0:8}.jsonl"
 fi
 ```
 
@@ -1319,9 +1324,8 @@ max_attempts=3
 
 while [ $attempt -lt $max_attempts ]; do
   # Run spec-verifier
-  # If PASS: tag and proceed
+  # If PASS: leave the loop. The gate-1-pass tag waits for the Floor check below.
   if grep -q "Status: PASS" workspace/raw/specs/verification-report.md; then
-    git tag -a gate-1-pass -m "Gate 1 passed: spec-verifier"
     break
   fi
 
@@ -1348,8 +1352,16 @@ The orchestrator writes no spec text. For remediation attempt `N`, dispatch `gre
 - Dispatch record: `L3-spec-remediator.md` for attempt 1, then `L3-spec-remediator-2.md` and `L3-spec-remediator-3.md`
 - Commit: `[gate:spec-remediator] Gate 1 remediation round N`
 
+### Floor check
+
+Run this after the remediation loop ends, whether or not remediation ran. Run it before you create the pass tag.
+
 ```bash
 greenfield-tiers floor workspace 3 || { echo "BLOCKED: Gate 1 model floor failed (see 'Floor failures')"; exit 1; }
+```
+
+```bash
+git tag -a gate-1-pass -m "Gate 1 passed: spec-verifier"
 ```
 
 **DO NOT proceed to Gate 1b until Gate 1 passes.**
@@ -1497,9 +1509,8 @@ max_attempts=3
 
 while [ $attempt -lt $max_attempts ]; do
   # Run spec-reviewer
-  # If PASS: tag and proceed
+  # If PASS: leave the loop. The gate-2-pass tag waits for the Floor check below.
   if grep -q "Status: PASS" workspace/raw/specs/review-notes.md; then
-    git tag -a gate-2-pass -m "Gate 2 passed: spec-reviewer"
     break
   fi
 
@@ -1526,8 +1537,16 @@ The orchestrator writes no spec text. For remediation attempt `N`, dispatch `gre
 - Dispatch record: `L4-spec-remediator.md` for attempt 1, then `L4-spec-remediator-2.md` and `L4-spec-remediator-3.md`
 - Commit: `[gate:spec-remediator] Gate 2 remediation round N`
 
+### Floor check
+
+Run this after the remediation loop ends, whether or not remediation ran. Run it before you create the pass tag.
+
 ```bash
 greenfield-tiers floor workspace 4 || { echo "BLOCKED: Gate 2 model floor failed (see 'Floor failures')"; exit 1; }
+```
+
+```bash
+git tag -a gate-2-pass -m "Gate 2 passed: spec-reviewer"
 ```
 
 **DO NOT proceed past Gate 2 until it passes.**
@@ -1626,7 +1645,7 @@ For each domain group, dispatch `greenfield:sanitizer`:
 - Prompt: "Role: sanitizer. Workspace: `<workspace-path>`. Follow the **spec-sanitization skill**, especially the Rewrite Rule and the External System Exception. Read these raw specs: [list of raw module spec paths]. Understand the behaviors they describe. Then WRITE a fresh output domain spec to `workspace/output/specs/domains/<domain-name>.md`. Do NOT copy text from raw specs — rewrite every sentence from your understanding. The output specs must contain ONLY: behavioral descriptions, user-facing identifiers (env vars, CLI flags, config keys, API fields, protocol constants), and numeric constants. No function names, no variable names, no minified identifiers, no internal feature flags, no telemetry event names, no source paths, no provenance citations. **Exception:** External system contracts (database schemas, third-party API fields, external CLI tool flags, imposed file formats) document systems the app does not own — preserve their details as behavioral constraints. The test: could someone read this spec with zero access to the source code and understand every word?"
 - Commit: `[L5:spec-sanitizer] Rewrite <domain-name> domain spec to output/`
 
-Every sanitizer prompt in Layers 5, 6, and 7 starts with `Role: sanitizer.`
+Start every sanitizer prompt in Layers 5, 6, and 7 with `Role: sanitizer.`
 
 Similarly dispatch sanitizers for:
 - External contracts (cli, environment, configuration, behavioral-integration) → `output/specs/contracts/`
@@ -1748,10 +1767,10 @@ while [ $attempt -lt $max_attempts ]; do
     fi
   done
 
+  # If PASS: commit and leave the loop. The review-complete tag waits for the floor check below.
   if $all_pass; then
     git add -A
     git commit -m "[L6:audit] All second-pass reviews PASS"
-    git tag -an review-complete -m "Layer 6: Independent audit passed (semantic review + deep-read)"
     break
   fi
 
@@ -1762,6 +1781,10 @@ while [ $attempt -lt $max_attempts ]; do
   # 1. Read detailed reports from workspace/raw/audit/
   # 2. Re-sanitize affected files using greenfield:sanitizer
   #    with targeted prompts referencing specific failed categories
+  #    - The prompt starts with `Role: sanitizer.`
+  #    - Model and effort: `greenfield-tiers lookup workspace sanitizer <round-1>`,
+  #      where <round-1> is the **Round:** value of this dispatch record minus 1
+  #    - Dispatch record: `L6-sanitizer-<n>.md`, where <n> is the **Round:** value
   # 3. Re-run all three audit agents
 
   if [ $attempt -ge $max_attempts ]; then
@@ -1773,6 +1796,10 @@ done
 
 ```bash
 greenfield-tiers floor workspace 6 || { echo "BLOCKED: Layer 6 model floor failed (see 'Floor failures')"; exit 1; }
+```
+
+```bash
+git tag -an review-complete -m "Layer 6: Independent audit passed (semantic review + deep-read)"
 ```
 
 **DO NOT proceed to Layer 7 until Layer 6 passes.**
@@ -1805,8 +1832,13 @@ done
 If any P0 behaviors were lost or weakened:
 1. Read the fidelity report to identify exactly what was lost
 2. Dispatch `greenfield:sanitizer` to restore the missing detail — the sanitizer reads the fidelity report and the raw specs, then updates the output spec to include the missing behavioral claim WITHOUT reintroducing source identifiers
+   - The prompt starts with `Role: sanitizer.`
+   - Model and effort: `greenfield-tiers lookup workspace sanitizer <round-1>`, where `<round-1>` is the `**Round:**` value of this dispatch record minus 1
+   - Dispatch record: `L7-sanitizer-<n>.md`, where `<n>` is the `**Round:**` value
 3. Re-run the fidelity validator on affected files
 4. Also re-run the Layer 6 deep-read audit on any modified files to confirm no contamination was reintroduced
+   - Dispatch record: `L7-deep-read-auditor-<n>.md`, where `<n>` is the remediation round
+   - Model and effort: `greenfield-tiers lookup workspace deep-read-auditor` with no steps. A judge is not raised.
 5. Maximum 3 remediation rounds
 
 ### Fidelity Pass
@@ -1864,7 +1896,7 @@ CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 SESSION_JSONL=$(find "$CLAUDE_DIR/projects" -path "*/subagents/agent-${AGENT_ID}.jsonl" 2>/dev/null | head -1)
 
 if [ -n "$SESSION_JSONL" ]; then
-  cp "$SESSION_JSONL" "workspace/provenance/sessions/<agent-name>-${AGENT_ID:0:8}.jsonl"
+  cp "$SESSION_JSONL" "workspace/provenance/sessions/<role>-${AGENT_ID:0:8}.jsonl"
 fi
 
 # Update workspace.json agent_runs array with:
@@ -1879,7 +1911,7 @@ fi
 #   - Updated provenance/audit-log.md
 ```
 
-`dispatch_record` and `session_log` are paths relative to the workspace root, for example `provenance/dispatch/L1-chunk-analyzer.md`. If no log was captured, `session_log` is `null`. The floor rule reads these fields at every gate.
+`dispatch_record` and `session_log` are paths relative to the workspace root, for example `provenance/dispatch/L1-chunk-analyzer.md` and `provenance/sessions/chunk-analyzer-1a2b3c4d.jsonl`. Neither path starts with `workspace/`. If no log was captured, `session_log` is `null`. The floor rule reads these fields at every gate.
 
 If the JSONL file cannot be found (agent ran in a different process), log a warning and continue. The provenance citations embedded in the output files are the primary audit trail; session JSONLs are supplementary.
 
