@@ -519,7 +519,7 @@ Take the first `major.minor.patch` number from the version text. Compare the thr
 - [ ] **Step 4: Run the tests and see them pass**
 
 Run: `scripts/test-tiers.sh`
-Expected: `test-tiers: 90 passed, 0 failed` on a machine with `jq`.
+Expected: `test-tiers: 102 passed, 0 failed` on a machine with `jq`.
 
 - [ ] **Step 5: Commit**
 
@@ -1065,7 +1065,7 @@ Add `spec-remediator` after `spec-verifier` in the analyzer role list under "How
 - [ ] **Step 3: Run the lint and the tests**
 
 Run: `scripts/lint-tiers.sh && scripts/test-tiers.sh`
-Expected: `LINT OK`, then `test-tiers: 90 passed, 0 failed`.
+Expected: `LINT OK`, then `test-tiers: 102 passed, 0 failed`.
 
 - [ ] **Step 4: Commit**
 

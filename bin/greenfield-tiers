@@ -124,7 +124,7 @@ cmd_init() {
   local f list=""
   for f in "$ws"/provenance/dispatch/*.md; do
     [ -e "$f" ] || continue
-    grep -q '^\*\*Model:\*\*' "$f" && continue
+    header_value "$f" Model >/dev/null && continue
     list="$list$(basename "$f")
 "
   done
@@ -140,6 +140,10 @@ cmd_lookup() {
   case "$steps" in
     "" | *[!0-9]*) die 2 "steps must be a non-negative integer" ;;
   esac
+  # Read steps in base 10. Leading zeros do not count toward the 3 digits.
+  steps=${steps#"${steps%%[!0]*}"}
+  [ "${#steps}" -le 3 ] || die 2 "steps must have at most 3 digits"
+  steps=$((10#${steps:-0}))
   local f rows
   f=$(ws_tiers "$ws") || exit $?
   rows=$(load_tiers "$f") || exit $?
@@ -293,7 +297,7 @@ model_alias() {
 floor_check_logs() {
   local rows=$1 ws=$2 rec=$3
   local name entries line erole elog tier pair fmodel fmr
-  local logfile lname id alias ar failed=0
+  local logfile lname id ids jrc alias ar failed=0
   name=$(basename "$rec")
 
   if [ -f "$ws/workspace.json" ]; then
@@ -312,8 +316,12 @@ floor_check_logs() {
   while IFS= read -r line; do
     erole=${line%%|*}
     elog=${line#*|}
-    logfile="$ws/$elog"
-    if [ -z "$elog" ] || [ ! -f "$logfile" ]; then
+    # The value is relative to the workspace root, or else a path as given.
+    if [ -n "$elog" ] && [ -f "$ws/$elog" ]; then
+      logfile="$ws/$elog"
+    elif [ -n "$elog" ] && [ -f "$elog" ]; then
+      logfile=$elog
+    else
       echo "WARN $name: no session log"
       continue
     fi
@@ -325,6 +333,11 @@ floor_check_logs() {
     pair=$(tier_pair "$rows" "$tier")
     fmodel=${pair% *}
     fmr=$(model_rank "$fmodel")
+    jrc=0
+    ids=$(jq -r 'select(.type=="assistant") | .message.model // empty' "$logfile" 2>/dev/null) || jrc=$?
+    if [ "$jrc" -ne 0 ] || [ -z "${ids//[[:space:]]/}" ]; then
+      echo "WARN $lname: no model ID could be read"
+    fi
     while IFS= read -r id; do
       [ -n "$id" ] || continue
       if ! alias=$(model_alias "$id"); then
@@ -336,7 +349,7 @@ floor_check_logs() {
         echo "FAIL $lname: ran on $id, below the floor $fmodel for $erole"
         failed=1
       fi
-    done < <(jq -r 'select(.type=="assistant") | .message.model // empty' "$logfile" 2>/dev/null | sort -u)
+    done < <(printf '%s\n' "$ids" | sort -u)
   done <<EOF
 $entries
 EOF
@@ -438,6 +451,7 @@ cmd_substitute() {
   case "$tier" in deep | standard | light) ;; *) die 2 "unknown tier: $tier" ;; esac
   model_rank "$model" >/dev/null || die 2 "unknown model: $model"
   effort_rank "$effort" >/dev/null || die 2 "unknown effort: $effort"
+  [ "$effort" != max ] || die 2 "effort max is not allowed: no dispatch uses max"
   reason=$(printf '%s' "$5" | tr '\r\n' '  ')
   [ -n "${reason//[[:space:]]/}" ] || die 2 "a reason is required"
 

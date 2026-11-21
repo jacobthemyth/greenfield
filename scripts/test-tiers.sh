@@ -207,5 +207,43 @@ run lookup "$ws" function-analyzer;      ok "substitute crlf lookup" [ "$OUT" = 
 ok "substitute keeps rows"  grep -q "^role  *chunk-analyzer" "$ws/provenance/model-tiers.tsv"
 ok "substitute one reason line" grep -q "^# substituted light: .*: multi line$" "$ws/provenance/model-tiers.tsv"
 
+# T3: steps are base 10, at most 3 digits
+ws=$(mkws)
+run lookup "$ws" function-analyzer 08;   ok "lookup steps 08"      [ "$RC" = 0 -a "$OUT" = "fable xhigh" ]
+run lookup "$ws" chunk-analyzer 0001;    ok "lookup steps 0001"    [ "$RC" = 0 -a "$OUT" = "fable high" ]
+run lookup "$ws" chunk-analyzer 1000;    ok "lookup steps 4 digits" [ "$RC" = 2 ]
+
+# T5: no dispatch uses effort max
+run substitute "$ws" deep opus max "x";  ok "substitute max effort" [ "$RC" = 2 ]
+
+# T4: a **Model:** line inside the fenced prompt does not count as a header
+old=$(mktemp -d "$TMPROOT/o.XXXXXX")/"old ws"; mkdir -p "$old/provenance/dispatch"
+printf '**Dispatched:** 2026-01-01T12:00:00Z\n**Scope:** full\n\n```text\nRole: doc-researcher.\n**Model:** haiku\n```\n' > "$old/provenance/dispatch/L1-doc-researcher.md"
+run init "$old"
+ok "init baseline fenced model" grep -qx "L1-doc-researcher.md" "$old/provenance/model-tiers-baseline.txt"
+
+if command -v jq >/dev/null; then
+  # T1: session_log given as an absolute path
+  ws=$(mkws); put "$ws" at-floor.md L1-chunk-analyzer.md; mkdir -p "$ws/provenance/sessions"
+  cp tests/fixtures/logs/sonnet.jsonl "$ws/provenance/sessions/sonnet.jsonl"
+  printf '{"agent_runs":[{"role":"chunk-analyzer","dispatch_record":"provenance/dispatch/L1-chunk-analyzer.md","session_log":"%s"}]}\n' "$ws/provenance/sessions/sonnet.jsonl" > "$ws/workspace.json"
+  run floor "$ws" 1
+  ok "log absolute path"    [ "$RC" = 1 ] && ok "log absolute text" has "FAIL sonnet.jsonl: ran on claude-sonnet-5-5, below the floor opus for chunk-analyzer"
+  ok "log absolute no warn" hasnt "no session log"
+
+  # T2: unreadable logs warn and never pass silently
+  ws=$(mkws); put "$ws" at-floor.md L1-chunk-analyzer.md; mkdir -p "$ws/provenance/sessions"
+  : > "$ws/provenance/sessions/empty.jsonl"
+  printf '{"agent_runs":[{"role":"chunk-analyzer","dispatch_record":"provenance/dispatch/L1-chunk-analyzer.md","session_log":"provenance/sessions/empty.jsonl"}]}\n' > "$ws/workspace.json"
+  run floor "$ws" 1
+  ok "log empty"            [ "$RC" = 0 ] && ok "log empty text" has "WARN empty.jsonl: no model ID could be read"
+  ws=$(mkws); put "$ws" at-floor.md L1-chunk-analyzer.md; mkdir -p "$ws/provenance/sessions"
+  head -n 1 tests/fixtures/logs/opus.jsonl > "$ws/provenance/sessions/cut.jsonl"
+  sed -n 2p tests/fixtures/logs/opus.jsonl | cut -c 1-30 >> "$ws/provenance/sessions/cut.jsonl"
+  printf '{"agent_runs":[{"role":"chunk-analyzer","dispatch_record":"provenance/dispatch/L1-chunk-analyzer.md","session_log":"provenance/sessions/cut.jsonl"}]}\n' > "$ws/workspace.json"
+  run floor "$ws" 1
+  ok "log truncated"        [ "$RC" = 0 ] && ok "log truncated text" has "WARN cut.jsonl: no model ID could be read"
+fi
+
 echo "test-tiers: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1
