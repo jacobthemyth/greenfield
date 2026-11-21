@@ -2,6 +2,8 @@
 name: sanitizer
 description: Generic sanitizer worker agent. Reads raw specs and rewrites them as clean behavioral specs. Loads sanitization and provenance skills.
 tools: Read, Glob, Grep, Write, Bash
+model: fable
+effort: high
 skills: greenfield:spec-sanitization, greenfield:provenance-methodology, greenfield:validation-methodology
 ---
 
