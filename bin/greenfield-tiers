@@ -384,14 +384,107 @@ cmd_floor() {
   return 1
 }
 
+MIN_VERSION="2.1.292"
+
+cmd_preflight() {
+  [ $# -eq 0 ] || die 2 "usage: greenfield-tiers preflight"
+  local found=0
+  if [ -n "${CLAUDE_CODE_SUBAGENT_MODEL_FORCE:-}" ]; then
+    echo "OVERRIDE CLAUDE_CODE_SUBAGENT_MODEL_FORCE is set: Claude Code ignores the model of every dispatch"
+    found=1
+  fi
+  if [ -n "${CLAUDE_CODE_EFFORT_LEVEL:-}" ]; then
+    echo "OVERRIDE CLAUDE_CODE_EFFORT_LEVEL is set: Claude Code ignores the effort of every dispatch"
+    found=1
+  fi
+
+  local text=""
+  if [ -n "${GREENFIELD_CLAUDE_VERSION+x}" ]; then
+    text=$GREENFIELD_CLAUDE_VERSION
+  elif command -v claude >/dev/null 2>&1; then
+    text=$(claude --version 2>/dev/null) || text=""
+  fi
+
+  if [[ $text =~ ([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+    local ver="${BASH_REMATCH[0]}"
+    local have=("$((10#${BASH_REMATCH[1]}))" "$((10#${BASH_REMATCH[2]}))" "$((10#${BASH_REMATCH[3]}))")
+    local need=(2 1 292) i older=0
+    for i in 0 1 2; do
+      if [ "${have[$i]}" -lt "${need[$i]}" ]; then
+        older=1
+        break
+      fi
+      [ "${have[$i]}" -gt "${need[$i]}" ] && break
+    done
+    if [ "$older" -eq 1 ]; then
+      echo "OVERRIDE Claude Code $ver is older than $MIN_VERSION: the per-call effort parameter is not available"
+      found=1
+    fi
+  else
+    echo "OVERRIDE Claude Code version is unknown"
+    found=1
+  fi
+
+  if [ "$found" -eq 0 ]; then
+    echo "PREFLIGHT OK"
+    return 0
+  fi
+  return 3
+}
+
+cmd_substitute() {
+  [ $# -eq 5 ] || die 2 "usage: greenfield-tiers substitute <workspace> <tier> <model> <effort> <reason>"
+  local ws=$1 tier=$2 model=$3 effort=$4 reason
+  case "$tier" in deep | standard | light) ;; *) die 2 "unknown tier: $tier" ;; esac
+  model_rank "$model" >/dev/null || die 2 "unknown model: $model"
+  effort_rank "$effort" >/dev/null || die 2 "unknown effort: $effort"
+  reason=$(printf '%s' "$5" | tr '\r\n' '  ')
+  [ -n "${reason//[[:space:]]/}" ] || die 2 "a reason is required"
+
+  local f rows pair old_model old_effort
+  f=$(ws_tiers "$ws") || exit $?
+  rows=$(load_tiers "$f") || exit $?
+  pair=$(tier_pair "$rows" "$tier")
+  old_model=${pair% *}
+  old_effort=${pair#* }
+
+  local tmp="$f.tmp.$$" line plain kind name replaced=0
+  : >"$tmp" || die 2 "cannot write $tmp"
+  while IFS= read -r line || [ -n "$line" ]; do
+    plain=${line%$'\r'}
+    read -r kind name _ <<EOF
+$plain
+EOF
+    if [ "$kind" = tier ] && [ "$name" = "$tier" ] && [ "$replaced" -eq 0 ]; then
+      printf 'tier\t%s\t%s\t%s' "$tier" "$model" "$effort" >>"$tmp"
+      [ "$plain" = "$line" ] || printf '\r' >>"$tmp"
+      printf '\n' >>"$tmp"
+      replaced=1
+    else
+      printf '%s\n' "$line" >>"$tmp"
+    fi
+  done <"$f"
+  if [ "$replaced" -eq 0 ]; then
+    rm -f "$tmp"
+    die 2 "tier row for '$tier' not found"
+  fi
+  printf '# substituted %s: %s/%s -> %s/%s at %s: %s\n' \
+    "$tier" "$old_model" "$old_effort" "$model" "$effort" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$reason" >>"$tmp"
+  mv "$tmp" "$f" || die 2 "cannot update $f"
+  echo "SUBSTITUTED $tier: $old_model/$old_effort -> $model/$effort"
+}
+
 main() {
-  [ $# -ge 1 ] || die 2 "usage: greenfield-tiers <init|lookup|floor> ..."
+  [ $# -ge 1 ] || die 2 "usage: greenfield-tiers <init|lookup|floor|preflight|substitute> ..."
   local sub=$1
   shift
   case "$sub" in
     init) cmd_init "$@" ;;
     lookup) cmd_lookup "$@" ;;
     floor) cmd_floor "$@" ;;
+    preflight) cmd_preflight "$@" ;;
+    substitute) cmd_substitute "$@" ;;
     *) die 2 "unknown subcommand: $sub" ;;
   esac
 }

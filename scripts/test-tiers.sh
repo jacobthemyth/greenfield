@@ -164,5 +164,48 @@ fi
 floor_log sonnet.jsonl; GREENFIELD_NO_JQ=1 run floor "$ws" 1
 ok "log without jq"         [ "$RC" = 0 ] && ok "without jq text" has "WARN L1: jq is not installed, session logs not compared"
 
+pf() { env -u CLAUDE_CODE_SUBAGENT_MODEL_FORCE -u CLAUDE_CODE_EFFORT_LEVEL "$@" bin/greenfield-tiers preflight; }
+runpf() { OUT=$(pf "$@" 2>&1); RC=$?; }
+
+runpf GREENFIELD_CLAUDE_VERSION="2.1.330 (Claude Code)"
+ok "preflight ok"           [ "$RC" = 0 -a "$OUT" = "PREFLIGHT OK" ]
+runpf GREENFIELD_CLAUDE_VERSION=2.1.292;   ok "preflight min version"  [ "$RC" = 0 ]
+runpf GREENFIELD_CLAUDE_VERSION=2.1.291
+ok "preflight old version"  [ "$RC" = 3 ] && ok "old version text" has "OVERRIDE Claude Code 2.1.291 is older than 2.1.292"
+runpf GREENFIELD_CLAUDE_VERSION=2.10.0;    ok "preflight numeric"      [ "$RC" = 0 ]    # Review Focus 5
+runpf GREENFIELD_CLAUDE_VERSION=3.0.0;     ok "preflight major"        [ "$RC" = 0 ]
+runpf GREENFIELD_CLAUDE_VERSION=unknown
+ok "preflight no version"   [ "$RC" = 3 ] && ok "no version text" has "OVERRIDE Claude Code version is unknown"
+runpf GREENFIELD_CLAUDE_VERSION=2.1.330 CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1
+ok "preflight model force"  [ "$RC" = 3 ] && ok "model force text" has "OVERRIDE CLAUDE_CODE_SUBAGENT_MODEL_FORCE is set"
+runpf GREENFIELD_CLAUDE_VERSION=2.1.330 CLAUDE_CODE_EFFORT_LEVEL=low
+ok "preflight effort level" [ "$RC" = 3 ] && ok "effort level text" has "OVERRIDE CLAUDE_CODE_EFFORT_LEVEL is set"
+runpf GREENFIELD_CLAUDE_VERSION=2.01.292;  ok "preflight leading zero" [ "$RC" = 0 ]
+
+ws=$(mkws)
+run substitute "$ws" deep opus xhigh "no Fable access"
+ok "substitute ok"          [ "$RC" = 0 -a "$OUT" = "SUBSTITUTED deep: fable/high -> opus/xhigh" ]
+ok "substitute comment"     grep -q "^# substituted deep: fable/high -> opus/xhigh at .*: no Fable access$" "$ws/provenance/model-tiers.tsv"
+run lookup "$ws" deep-dive-analyzer;     ok "substitute lookup"   [ "$OUT" = "opus xhigh" ]
+run lookup "$ws" deep-dive-analyzer 1;   ok "substitute ceiling"  [ "$OUT" = "opus xhigh" ]
+run lookup "$ws" chunk-analyzer 1;       ok "substitute raise"    [ "$OUT" = "opus xhigh" ]
+put "$ws" at-floor.md L3-deep-dive-x.md
+sed -i.bak -e 's/chunk-analyzer$/deep-dive-analyzer/' -e 's/^\*\*Effort:\*\* high/**Effort:** xhigh/' "$ws/provenance/dispatch/L3-deep-dive-x.md"
+rm "$ws/provenance/dispatch/L3-deep-dive-x.md.bak"
+run floor "$ws" 3;          ok "substitute floor"    [ "$RC" = 0 ]
+run substitute "$ws" deep gpt high "x";      ok "substitute bad model"  [ "$RC" = 2 ]
+run substitute "$ws" huge opus high "x";     ok "substitute bad tier"   [ "$RC" = 2 ]
+run substitute "$ws" deep opus high "";      ok "substitute no reason"  [ "$RC" = 2 ]
+
+# substitute on a hand-edited copy (spaces, CRLF) keeps other lines
+ws=$(mkws)
+awk '{gsub(/\t/,"    "); printf "%s\r\n", $0}' "$ws/provenance/model-tiers.tsv" > "$ws/t" && mv "$ws/t" "$ws/provenance/model-tiers.tsv"
+run substitute "$ws" light haiku low "multi
+line"
+ok "substitute crlf"        [ "$RC" = 0 -a "$OUT" = "SUBSTITUTED light: sonnet/medium -> haiku/low" ]
+run lookup "$ws" function-analyzer;      ok "substitute crlf lookup" [ "$OUT" = "haiku low" ]
+ok "substitute keeps rows"  grep -q "^role  *chunk-analyzer" "$ws/provenance/model-tiers.tsv"
+ok "substitute one reason line" grep -q "^# substituted light: .*: multi line$" "$ws/provenance/model-tiers.tsv"
+
 echo "test-tiers: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1
