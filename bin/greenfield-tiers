@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# greenfield-tiers: fixed model and effort levels for each subagent role.
+set -u
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+PLUGIN_TIERS="${GREENFIELD_TIERS_FILE:-$SCRIPT_DIR/../model-tiers.tsv}"
+
+MODELS=(haiku sonnet opus fable)
+EFFORTS=(low medium high xhigh max)
+
+die() {
+  local code=$1
+  shift
+  echo "greenfield-tiers: $*" >&2
+  exit "$code"
+}
+
+# Print the index of $1 in the list that follows it. Return 1 if absent.
+rank_in() {
+  local want=$1 i=0 item
+  shift
+  for item in "$@"; do
+    if [ "$item" = "$want" ]; then
+      echo "$i"
+      return 0
+    fi
+    i=$((i + 1))
+  done
+  return 1
+}
+
+model_rank() { rank_in "${1:-}" "${MODELS[@]}"; }
+effort_rank() { rank_in "${1:-}" "${EFFORTS[@]}"; }
+
+ws_tiers() {
+  local f="$1/provenance/model-tiers.tsv"
+  [ -f "$f" ] || die 2 "no tier file in workspace; run greenfield-tiers init"
+  echo "$f"
+}
+
+# Print normalized rows: "tier <name> <model> <effort>" and "role <name> <tier>".
+# Dies with code 2 if the file is invalid. Call as: rows=$(load_tiers f) || exit $?
+load_tiers() {
+  local file=$1 kind a b c extra
+  local tiers=" " roles=" "
+  [ -f "$file" ] || die 2 "invalid tier file: $file not found"
+  while read -r kind a b c extra; do
+    case "$kind" in
+      "" | "#"*) continue ;;
+    esac
+    case "$kind" in
+      tier)
+        [ -n "$c" ] && [ -z "$extra" ] || die 2 "invalid tier file: bad tier row for '$a'"
+        case "$a" in deep | standard | light) ;; *) die 2 "invalid tier file: unknown tier '$a'" ;; esac
+        case "$tiers" in *" $a "*) die 2 "invalid tier file: tier '$a' repeated" ;; esac
+        model_rank "$b" >/dev/null || die 2 "invalid tier file: unknown model '$b'"
+        effort_rank "$c" >/dev/null || die 2 "invalid tier file: unknown effort '$c'"
+        tiers="$tiers$a "
+        echo "tier $a $b $c"
+        ;;
+      role)
+        [ -n "$b" ] && [ -z "$c" ] || die 2 "invalid tier file: bad role row for '$a'"
+        case "$b" in deep | standard | light) ;; *) die 2 "invalid tier file: role '$a' has unknown tier '$b'" ;; esac
+        case "$roles" in *" $a "*) die 2 "invalid tier file: role '$a' repeated" ;; esac
+        roles="$roles$a "
+        echo "role $a $b"
+        ;;
+      *) die 2 "invalid tier file: unknown row type '$kind'" ;;
+    esac
+  done < <(tr -d '\r' <"$file")
+  case "$tiers" in *" deep "*) ;; *) die 2 "invalid tier file: missing tier deep" ;; esac
+  case "$tiers" in *" standard "*) ;; *) die 2 "invalid tier file: missing tier standard" ;; esac
+  case "$tiers" in *" light "*) ;; *) die 2 "invalid tier file: missing tier light" ;; esac
+}
+
+# Print "<model> <effort>" for a tier name from normalized rows on $1.
+tier_pair() {
+  local rows=$1 name=$2 k n m e
+  while read -r k n m e; do
+    if [ "$k" = tier ] && [ "$n" = "$name" ]; then
+      echo "$m $e"
+      return 0
+    fi
+  done <<EOF
+$rows
+EOF
+  return 1
+}
+
+# Print the tier name of a role from normalized rows on $1.
+role_tier() {
+  local rows=$1 name=$2 k n t
+  while read -r k n t; do
+    if [ "$k" = role ] && [ "$n" = "$name" ]; then
+      echo "$t"
+      return 0
+    fi
+  done <<EOF
+$rows
+EOF
+  return 1
+}
+
+# Print "<model> <effort>" of the role's own tier. Return 1 for an unknown role.
+role_floor() {
+  local rows t
+  rows=$(load_tiers "$1") || exit $?
+  t=$(role_tier "$rows" "$2") || return 1
+  tier_pair "$rows" "$t"
+}
+
+cmd_init() {
+  [ $# -eq 1 ] || die 2 "usage: greenfield-tiers init <workspace>"
+  local ws=$1
+  [ -d "$ws" ] || die 2 "workspace not found: $ws"
+  local dest="$ws/provenance/model-tiers.tsv"
+  if [ -f "$dest" ]; then
+    echo "INIT kept"
+    return 0
+  fi
+  load_tiers "$PLUGIN_TIERS" >/dev/null || exit $?
+  mkdir -p "$ws/provenance" || die 2 "cannot create $ws/provenance"
+  cp "$PLUGIN_TIERS" "$dest" || die 2 "cannot copy tier file"
+  local f list=""
+  for f in "$ws"/provenance/dispatch/*.md; do
+    [ -e "$f" ] || continue
+    grep -q '^\*\*Model:\*\*' "$f" && continue
+    list="$list$(basename "$f")
+"
+  done
+  if [ -n "$list" ]; then
+    printf '%s' "$list" >"$ws/provenance/model-tiers-baseline.txt"
+  fi
+  echo "INIT copied"
+}
+
+cmd_lookup() {
+  { [ $# -eq 2 ] || [ $# -eq 3 ]; } || die 2 "usage: greenfield-tiers lookup <workspace> <role> [steps]"
+  local ws=$1 role=$2 steps=${3:-0}
+  case "$steps" in
+    "" | *[!0-9]*) die 2 "steps must be a non-negative integer" ;;
+  esac
+  local f rows
+  f=$(ws_tiers "$ws") || exit $?
+  rows=$(load_tiers "$f") || exit $?
+  local t
+  t=$(role_tier "$rows" "$role") || die 1 "unknown role: $role"
+  local pos
+  case "$t" in light) pos=0 ;; standard) pos=1 ;; *) pos=2 ;; esac
+  pos=$((pos + steps))
+  [ "$pos" -le 3 ] || pos=3
+  local name pair model effort
+  if [ "$pos" -le 2 ]; then
+    case "$pos" in 0) name=light ;; 1) name=standard ;; *) name=deep ;; esac
+    pair=$(tier_pair "$rows" "$name")
+    echo "$pair"
+  else
+    pair=$(tier_pair "$rows" deep)
+    model=${pair% *}
+    effort=${pair#* }
+    if [ "$(effort_rank "$effort")" -lt "$(effort_rank xhigh)" ]; then
+      effort=xhigh
+    fi
+    echo "$model $effort"
+  fi
+}
+
+main() {
+  [ $# -ge 1 ] || die 2 "usage: greenfield-tiers <init|lookup> ..."
+  local sub=$1
+  shift
+  case "$sub" in
+    init) cmd_init "$@" ;;
+    lookup) cmd_lookup "$@" ;;
+    *) die 2 "unknown subcommand: $sub" ;;
+  esac
+}
+
+main "$@"
