@@ -74,7 +74,7 @@ The role name `sanitizer` covers every dispatch of the `greenfield:sanitizer` ag
 
 ## Tier file
 
-The plugin ships one file, `model-tiers.tsv`, at the plugin root. It is the only place that holds the tiers and the role assignments. The file is tab-separated and holds two kinds of rows.
+The plugin ships one file, `model-tiers.tsv`, at the plugin root. It is the only place that holds the tiers and the role assignments. The file is tab-separated and holds two kinds of rows. The tool also accepts spaces between the fields.
 
 ```text
 tier	deep	fable	high
@@ -159,6 +159,8 @@ The filename prefix `L<layer>-` of a dispatch record names its layer. Three case
 - The records of Gate 1 and Gate 1b, and of their remediation, use `L3-`.
 - The records of Gate 2 and of its remediation use `L4-`.
 
+A record can carry one more header line, `**Supersedes:** <record filename>`. A dispatch that repeats the full work of an earlier dispatch uses this line. The output of the earlier dispatch is discarded.
+
 ## Floor rule at the gates
 
 Every layer gate in `/analyze`, from Layer 1 to Layer 7, runs `greenfield-tiers floor` for its layer. Gate 1 and Gate 1b each run it for Layer 3 after their remediation loop, and Gate 2 runs it for Layer 4. A FAIL line fails the gate. A WARN line does not.
@@ -167,7 +169,9 @@ The rule has two passes.
 
 The first pass reads each dispatch record that has the prefix of the layer.
 
+- If the layer has no dispatch record, the result is FAIL.
 - If the record lacks a `**Role:**`, `**Model:**`, `**Effort:**`, or `**Raised:**` line, the result is FAIL.
+- Only the header lines above the prompt fence count. The prompt text is not read.
 - If the model is weaker than the floor model of the role, the result is FAIL.
 - If the effort is lower than the floor effort of the role, the result is FAIL.
 - If the values are above the floor and `**Raised:**` is `no`, the result is FAIL.
@@ -177,10 +181,19 @@ The second pass reads each `agent_runs` entry whose `dispatch_record` has the pr
 - If the entry has a session log, the tool reads the model of each assistant message with `jq`.
 - If any such model is weaker than the floor model of the role, the result is FAIL.
 - If the entry has no session log, or `jq` is not installed, the result is WARN.
+- If a model ID names no known alias, the result is WARN.
 
 The second pass exists because Claude Code can replace a blocked model with a fallback model and report no error. The session log holds a full model ID, such as `claude-opus-5-5`. The tool maps an ID to an alias by the alias name inside the ID. The session log does not give a reliable effort level, so the second pass compares only the model.
 
 The existing Tier 2b test in the Layer 1 gate stays. It continues to require a record and a `**Scope:**` line for each Layer 1 role.
+
+## Floor failures
+
+A FAIL line from the first pass means that a dispatch ran below its floor, or that its record cannot prove otherwise. The orchestrator dispatches the role again for the same full scope, at the values that `lookup` prints. The new record names the old record in a `**Supersedes:**` line. The floor rule skips a superseded record and its `agent_runs` entries, and it prints a SKIP line for each. The orchestrator never edits a record to clear a FAIL.
+
+A FAIL line from the second pass means that Claude Code ran a weaker model than the dispatch named. The orchestrator stops and asks the user, as for a model that is not available.
+
+A workspace from before this change holds records with no model lines. On the first `init` in such a workspace, the tool writes the names of those records to `provenance/model-tiers-baseline.txt`. The floor rule skips each record in that file and prints a SKIP line.
 
 ## Session log path
 
@@ -198,7 +211,7 @@ Step 0 of `/analyze` and Phase 1 of `/sanitize` run `greenfield-tiers preflight`
 
 - `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` is set. Claude Code then ignores the model of every dispatch.
 - `CLAUDE_CODE_EFFORT_LEVEL` is set. Claude Code then ignores the effort of every dispatch.
-- The Claude Code version is older than 2.1.292. That version added the per-call `effort` parameter.
+- The Claude Code version is older than 2.1.292. That version added the per-call `effort` parameter. A version that the tool cannot read counts as this condition.
 
 If the tool reports a condition, the orchestrator stops and asks the user. The user can end the run or continue. If the user continues, the orchestrator writes the condition and the answer to `provenance/audit-log.md`.
 
@@ -263,6 +276,10 @@ The plugin has no test suite today. This change adds two bash scripts under `scr
 | `lookup` with 0, 1, 2, and 5 steps for one role of each tier | The ladder values, capped at fable/xhigh |
 | `lookup` for an unknown role | Nonzero exit status |
 | `substitute`, then `floor` | The floor uses the substitute |
+| Record below the floor that a later record supersedes | SKIP |
+| Record without model lines that the baseline file lists | SKIP |
+| Record whose prompt text holds a `**Model:**` line | The header decides the result |
+| Tier file with spaces between fields and CRLF line ends | `lookup` prints the same values |
 
 One manual run closes the work. Start `/analyze` from a Sonnet session on a small target and stop after Layer 2. Then make sure that each dispatch record names the tier values, and that each captured session log shows the same model. This run also proves that `bin/greenfield-tiers` is on the PATH.
 
