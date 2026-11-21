@@ -1784,7 +1784,9 @@ while [ $attempt -lt $max_attempts ]; do
   #    - The prompt starts with `Role: sanitizer.`
   #    - Model and effort: `greenfield-tiers lookup workspace sanitizer <round-1>`,
   #      where <round-1> is the **Round:** value of this dispatch record minus 1
-  #    - Dispatch record: `L6-sanitizer-<n>.md`, where <n> is the **Round:** value
+  #    - Dispatch record: `L6-sanitizer-<domain>-<n>.md`, one per agent, where <domain>
+  #      is the output domain file name without `.md` and <n> is the **Round:** value.
+  #      Example: `L6-sanitizer-process-lifecycle-2.md`
   # 3. Re-run all three audit agents
 
   if [ $attempt -ge $max_attempts ]; then
@@ -1834,10 +1836,10 @@ If any P0 behaviors were lost or weakened:
 2. Dispatch `greenfield:sanitizer` to restore the missing detail — the sanitizer reads the fidelity report and the raw specs, then updates the output spec to include the missing behavioral claim WITHOUT reintroducing source identifiers
    - The prompt starts with `Role: sanitizer.`
    - Model and effort: `greenfield-tiers lookup workspace sanitizer <round-1>`, where `<round-1>` is the `**Round:**` value of this dispatch record minus 1
-   - Dispatch record: `L7-sanitizer-<n>.md`, where `<n>` is the `**Round:**` value
+   - Dispatch record: `L7-sanitizer-<domain>-<n>.md`, one per agent, where `<domain>` is the output domain file name without `.md` and `<n>` is the `**Round:**` value. Example: `L7-sanitizer-process-lifecycle-2.md`
 3. Re-run the fidelity validator on affected files
 4. Also re-run the Layer 6 deep-read audit on any modified files to confirm no contamination was reintroduced
-   - Dispatch record: `L7-deep-read-auditor-<n>.md`, where `<n>` is the remediation round
+   - Dispatch record: `L7-deep-read-auditor-<batch>-<n>.md`, one per agent, where `<batch>` is the batch number of its findings file and `<n>` is the remediation round
    - Model and effort: `greenfield-tiers lookup workspace deep-read-auditor` with no steps. A judge is not raised.
 5. Maximum 3 remediation rounds
 

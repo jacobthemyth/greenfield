@@ -89,7 +89,13 @@ Pass the first word as `model` and the second word as `effort`. Do not let a dis
 
 If an Agent call fails because the account cannot use the model, stop and ask the user for a substitute. Never select a weaker model yourself. Record an approved substitute with `greenfield-tiers substitute "$ARGUMENTS" <tier> <model> <effort> "<reason>"`.
 
-Before every Agent call, write the prompt to `$ARGUMENTS/provenance/dispatch/L5-<role>-<n>.md` with these header lines above the fenced prompt:
+Before every Agent call, write the prompt to a dispatch record in `$ARGUMENTS/provenance/dispatch/`. Each agent gets its own record:
+
+- A sanitizer writes `L5-sanitizer-<domain>-<n>.md`. `<domain>` is the name of its output file without `.md`.
+- A contamination judge writes `L5-contamination-judge-<batch>-<n>.md`. `<batch>` is the batch number of its verdict file.
+- `<n>` is the `**Round:**` value.
+
+Put these header lines above the fenced prompt:
 
 ```markdown
 **Dispatched:** 2026-01-01T12:00:00Z
