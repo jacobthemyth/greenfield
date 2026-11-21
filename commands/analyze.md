@@ -487,6 +487,15 @@ greenfield-tiers substitute workspace <tier> <model> <effort> "<reason>"
 
 Print each substitute in the final summary.
 
+### Floor failures
+
+Every gate runs `greenfield-tiers floor workspace <layer>`. A FAIL line fails the gate. A WARN line does not.
+
+- If a dispatch record fails, dispatch the role again for the same full scope at the `lookup` values. Add `**Supersedes:** <failed record filename>` to the new record. Discard the output of the earlier dispatch.
+- If a session log fails, Claude Code ran a weaker model than the dispatch named. Stop and ask the user, as in **Model not available**.
+- Never edit or delete a dispatch record to clear a FAIL line.
+- Print each WARN line in the final summary.
+
 ### Dispatch record
 
 **Before** every Agent call — not after, not in a batch at the end — write the prompt you are about to send, verbatim, to `workspace/provenance/dispatch/L<layer>-<role>.md`.
@@ -526,15 +535,11 @@ Format — eight header lines, then the prompt in a fence:
 The Agent tool returns an `agentId` for each dispatch. After the agent completes, this ID maps to a session JSONL file. To capture provenance:
 
 ```bash
-# The session JSONL lives at ~/.claude/projects/<encoded-cwd>/<agentId>.jsonl
-# <encoded-cwd> encodes the working directory path: / becomes -
-# Example: /Users/jesse/project → -Users-jesse-project
+# A subagent log is at <claude-dir>/projects/<project>/<session-id>/subagents/agent-<agentId>.jsonl
+CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+SESSION_JSONL=$(find "$CLAUDE_DIR/projects" -path "*/subagents/agent-${AGENT_ID}.jsonl" 2>/dev/null | head -1)
 
-ENCODED_CWD=$(echo "$PWD" | sed 's|/|-|g')
-SESSION_JSONL=~/.claude/projects/${ENCODED_CWD}/${AGENT_ID}.jsonl
-
-# Copy to workspace provenance directory (if the file exists)
-if [ -f "$SESSION_JSONL" ]; then
+if [ -n "$SESSION_JSONL" ]; then
   cp "$SESSION_JSONL" workspace/provenance/sessions/<agent-name>-<short-id>.jsonl
 fi
 ```
@@ -1051,6 +1056,12 @@ else
     fi
 fi
 
+# --- Model floor: every Layer 1 dispatch ran at or above its floor ---
+if ! greenfield-tiers floor workspace 1; then
+  echo "LAYER 1 GATE FAILED: model floor (see the FAIL lines above and 'Floor failures' in the Agent Dispatch Protocol)"
+  GATE_FAIL=1
+fi
+
 if [ "$GATE_FAIL" -eq 1 ]; then
   echo "STOP: Layer 1 gate failed. Re-dispatch failed source agents before proceeding."
   exit 1
@@ -1146,6 +1157,12 @@ else
     GATE_FAIL=1
   fi
   echo "Module map: $module_count modules identified"
+fi
+
+# --- Model floor: every Layer 2 dispatch ran at or above its floor ---
+if ! greenfield-tiers floor workspace 2; then
+  echo "LAYER 2 GATE FAILED: model floor (see the FAIL lines above and 'Floor failures' in the Agent Dispatch Protocol)"
+  GATE_FAIL=1
 fi
 
 if [ "$GATE_FAIL" -eq 1 ]; then
@@ -1255,6 +1272,12 @@ if [ "$contract_count" -eq 0 ]; then
 fi
 echo "Contracts: $contract_count files"
 
+# --- Model floor: every Layer 3 dispatch ran at or above its floor ---
+if ! greenfield-tiers floor workspace 3; then
+  echo "LAYER 3 GATE FAILED: model floor (see the FAIL lines above and 'Floor failures' in the Agent Dispatch Protocol)"
+  GATE_FAIL=1
+fi
+
 if [ "$GATE_FAIL" -eq 1 ]; then
   echo "STOP: Layer 3 gate failed. Re-dispatch failed agents before proceeding to Gate 1."
   exit 1
@@ -1315,6 +1338,10 @@ while [ $attempt -lt $max_attempts ]; do
 done
 ```
 
+```bash
+greenfield-tiers floor workspace 3 || { echo "BLOCKED: Gate 1 model floor failed (see 'Floor failures')"; exit 1; }
+```
+
 **DO NOT proceed to Gate 1b until Gate 1 passes.**
 
 ---
@@ -1348,6 +1375,10 @@ If P0 gaps are found (missing user-facing tools, env vars, or CLI flags):
 **Coverage gaps come first, and they need an observer, not a writer.** If Check M7 reports P0 UI-state coverage gaps — unresolved `ST-NNN` rows, an enabled `CMD-NNN` with no coverage row, a missing constant row — and `workspace/environment/runtime-environment.md` plus `workspace.json.runtime_environment` still record a LIVE environment (for `vm-tart`/`vm-lume`, confirm the working VM is still up before believing the record), then re-dispatch an OBSERVER with the unresolved `ST-NNN` list BEFORE dispatching any spec writer for this round. The ordering is not a preference. A spec writer cannot conjure a screenshot; only an observer running against a running environment can close a coverage gap, and a spec round that runs first will produce prose that reads as if the gap were closed while the evidence directory is unchanged. Use the same frozen-rows addendum as the Layer 1 Gate Remediation above, and write its dispatch record under `workspace/provenance/dispatch/` with `**Scope:** narrowed — M7 coverage remediation`.
 
 If the environment is GONE (cleanup already ran, the VM was deleted, `host-direct` session ended), do not pretend a spec round closed the gap. Downgrade each unresolved row to a documented ceiling: `BLOCKED` with the reason `environment-unavailable-at-gate-1b`, carried into `visual-behaviors.md` as a limitation of the run rather than a property of the app. A stated ceiling is auditable; a spec paragraph written over an empty evidence directory is not.
+
+```bash
+greenfield-tiers floor workspace 3 || { echo "BLOCKED: Gate 1b model floor failed (see 'Floor failures')"; exit 1; }
+```
 
 ```bash
 git tag -a source-completeness-pass -m "Gate 1b: Source-to-spec completeness validated"
@@ -1418,6 +1449,12 @@ if [ "$tv_count" -gt 0 ]; then
   echo "Input/output pairs: $pair_count"
 fi
 
+# --- Model floor: every Layer 4 dispatch ran at or above its floor ---
+if ! greenfield-tiers floor workspace 4; then
+  echo "LAYER 4 GATE FAILED: model floor (see the FAIL lines above and 'Floor failures' in the Agent Dispatch Protocol)"
+  GATE_FAIL=1
+fi
+
 if [ "$GATE_FAIL" -eq 1 ]; then
   echo "STOP: Layer 4 gate failed. Re-dispatch test/validation agents before proceeding to Gate 2."
   exit 1
@@ -1469,6 +1506,10 @@ while [ $attempt -lt $max_attempts ]; do
     exit 1
   fi
 done
+```
+
+```bash
+greenfield-tiers floor workspace 4 || { echo "BLOCKED: Gate 2 model floor failed (see 'Floor failures')"; exit 1; }
 ```
 
 **DO NOT proceed past Gate 2 until it passes.**
@@ -1611,6 +1652,10 @@ else
 fi
 ```
 
+```bash
+greenfield-tiers floor workspace 5 || { echo "BLOCKED: Layer 5 model floor failed (see 'Floor failures')"; exit 1; }
+```
+
 Tag sanitization complete:
 ```bash
 git tag -a specs-ready -m "Layer 5: All raw specs sanitized to output/"
@@ -1708,6 +1753,10 @@ while [ $attempt -lt $max_attempts ]; do
 done
 ```
 
+```bash
+greenfield-tiers floor workspace 6 || { echo "BLOCKED: Layer 6 model floor failed (see 'Floor failures')"; exit 1; }
+```
+
 **DO NOT proceed to Layer 7 until Layer 6 passes.**
 
 ---
@@ -1743,6 +1792,10 @@ If any P0 behaviors were lost or weakened:
 5. Maximum 3 remediation rounds
 
 ### Fidelity Pass
+
+```bash
+greenfield-tiers floor workspace 7 || { echo "BLOCKED: Layer 7 model floor failed (see 'Floor failures')"; exit 1; }
+```
 
 ```bash
 git add -A
@@ -1788,20 +1841,16 @@ fi
 After EVERY agent dispatch completes, the Agent tool returns an `agentId`. Use this to capture the session log:
 
 ```bash
-# The agentId maps to a session JSONL at:
-# ~/.claude/projects/<encoded-cwd>/<agentId>.jsonl
-# where <encoded-cwd> is the working directory with / replaced by -
+# A subagent log is at <claude-dir>/projects/<project>/<session-id>/subagents/agent-<agentId>.jsonl
+CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+SESSION_JSONL=$(find "$CLAUDE_DIR/projects" -path "*/subagents/agent-${AGENT_ID}.jsonl" 2>/dev/null | head -1)
 
-ENCODED_CWD=$(echo "$PWD" | sed 's|/|-|g')
-AGENT_SESSION="$HOME/.claude/projects/${ENCODED_CWD}/${AGENT_ID}.jsonl"
-
-# Copy to workspace provenance directory (best-effort)
-if [ -f "$AGENT_SESSION" ]; then
-  cp "$AGENT_SESSION" workspace/provenance/sessions/<agent-name>-${AGENT_ID:0:8}.jsonl
+if [ -n "$SESSION_JSONL" ]; then
+  cp "$SESSION_JSONL" "workspace/provenance/sessions/<agent-name>-${AGENT_ID:0:8}.jsonl"
 fi
 
 # Update workspace.json agent_runs array with:
-#   { agent, agentId, started_at, completed_at, status, output_files }
+#   { agent, agentId, role, model, effort, dispatch_record, session_log, started_at, completed_at, status, output_files }
 
 # Append entry to provenance/audit-log.md
 
@@ -1812,7 +1861,9 @@ fi
 #   - Updated provenance/audit-log.md
 ```
 
-If the JSONL file cannot be found (agent ran in a different process or path encoding differs), log a warning and continue. The provenance citations embedded in the output files are the primary audit trail; session JSONLs are supplementary.
+`dispatch_record` and `session_log` are paths relative to the workspace root, for example `provenance/dispatch/L1-chunk-analyzer.md`. If no log was captured, `session_log` is `null`. The floor rule reads these fields at every gate.
+
+If the JSONL file cannot be found (agent ran in a different process), log a warning and continue. The provenance citations embedded in the output files are the primary audit trail; session JSONLs are supplementary.
 
 ---
 
@@ -1883,6 +1934,8 @@ Sources skipped:   runtime (no container runtime), binary (no binaries found),
                    macos-runtime, app-data (environment: none)
 Environment:       none
 Agents dispatched: N
+Model tiers:       deep fable/high, standard opus/high, light sonnet/medium (substitutes: none)
+Floor warnings:    N
 Gate 1:            PASS
 Gate 1b:           PASS
 Gate 2:            PASS
@@ -1903,6 +1956,8 @@ Sources analyzed:   source, docs, sdk, community, git-history, tests,
 Sources skipped:    runtime (no container runtime), binary (no binaries found)
 Environment:        vm-tart (greenfield-<slug>-target, deleted)
 Agents dispatched:  N
+Model tiers:        deep fable/high, standard opus/high, light sonnet/medium (substitutes: none)
+Floor warnings:     N
 Gate 1:             PASS
 Gate 1b:            PASS
 Gate 2:             PASS
