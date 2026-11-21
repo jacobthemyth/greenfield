@@ -11,7 +11,7 @@ allowed-tools:
   - Grep
   - Write
   - Bash
-  - Task
+  - Agent
   - TodoWrite
 ---
 
@@ -39,6 +39,13 @@ echo "Raw specs files: $(find $ARGUMENTS/raw/specs/ -name '*.md' -type f | wc -l
 echo "Public artifacts: $(find $ARGUMENTS/public/ -name '*.md' -type f 2>/dev/null | wc -l)"
 ```
 
+```bash
+greenfield-tiers preflight
+greenfield-tiers init "$ARGUMENTS"
+```
+
+If `preflight` exits with status 3, stop and show its output to the user. Ask whether to end the run or to continue.
+
 ## PHASE 2: Public Source Pass-Through
 
 Public artifacts contain no implementation details and pass through without modification:
@@ -63,7 +70,42 @@ find $ARGUMENTS/raw/specs/ -name '*.md' -type f
 
 For each file (or batch of related files), dispatch `greenfield:sanitizer`:
 
-- Prompt: "Follow the **spec-sanitization skill** for the full transformation methodology. Read `$ARGUMENTS/raw/specs/<file-path>`. Understand the behavioral intent. Rewrite without source references. Transform provenance citations (strip raw refs, preserve confidence). Write to `$ARGUMENTS/output/specs/<relative-path>`. For module specs, merge into behavioral domain files in `$ARGUMENTS/output/specs/domains/`."
+- Prompt: "Role: sanitizer. Follow the **spec-sanitization skill** for the full transformation methodology. Read `$ARGUMENTS/raw/specs/<file-path>`. Understand the behavioral intent. Rewrite without source references. Transform provenance citations (strip raw refs, preserve confidence). Write to `$ARGUMENTS/output/specs/<relative-path>`. For module specs, merge into behavioral domain files in `$ARGUMENTS/output/specs/domains/`."
+
+### Model, effort, and dispatch record
+
+Before every Agent call in this command, run:
+
+```bash
+greenfield-tiers lookup "$ARGUMENTS" <role>
+```
+
+Pass the first word as `model` and the second word as `effort`. Do not let a dispatch inherit the session model. If a role runs again because its output failed, pass the count of earlier failed rounds as the last argument.
+
+Before every Agent call, write the prompt to `$ARGUMENTS/provenance/dispatch/L5-<role>-<n>.md` with these header lines above the fenced prompt:
+
+```markdown
+**Dispatched:** 2026-01-01T12:00:00Z
+**Subagent:** greenfield:sanitizer
+**Round:** 1
+**Scope:** full
+**Role:** sanitizer
+**Model:** fable
+**Effort:** high
+**Raised:** no
+```
+
+`**Raised:**` is `no` at the floor, and `yes: <reason>` above the floor.
+
+After each agent returns, copy its session log and add an entry to `agent_runs` in `$ARGUMENTS/workspace.json`:
+
+```bash
+CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+SESSION_JSONL=$(find "$CLAUDE_DIR/projects" -path "*/subagents/agent-${AGENT_ID}.jsonl" 2>/dev/null | head -1)
+[ -n "$SESSION_JSONL" ] && cp "$SESSION_JSONL" "$ARGUMENTS/provenance/sessions/<role>-${AGENT_ID:0:8}.jsonl"
+# agent_runs entry: { agent, agentId, role, model, effort, dispatch_record, session_log, status }
+# dispatch_record and session_log are paths relative to the workspace root. session_log is null with no log.
+```
 
 ### Provenance Citation Transformation
 
@@ -88,6 +130,8 @@ During sanitization, provenance citations are transformed:
 
 ## PHASE 4: Validation Artifact Sanitization
 
+Each dispatch in this phase follows "Model, effort, and dispatch record" in Phase 3.
+
 Acceptance criteria and test vectors also need sanitization:
 
 ```bash
@@ -105,7 +149,13 @@ For each validation artifact:
 
 After all agents complete, verify the output specs using LLM judgment.
 
-**For EACH file in `$ARGUMENTS/output/specs/`**, read the file end-to-end and evaluate against these criteria:
+Do not judge the files yourself. Batch the files in `$ARGUMENTS/output/specs/` into groups of 4 or 5. For each batch, dispatch `greenfield:analyzer` as `contamination-judge`. Dispatch at most 4 agents in parallel.
+
+- Prompt: the `contamination-judge` prompt from `/analyze` Layer 5, with `$ARGUMENTS` as the workspace path. Add the five criteria below and the reimplementor test to the prompt. The agent writes its verdicts to `$ARGUMENTS/raw/audit/contamination-judge-batch-<n>.md`.
+  - Prompt text: "Role: contamination-judge (Layer 5 verification). Follow the **spec-sanitization skill**, specifically the reimplementor test. Workspace: `$ARGUMENTS`. Read these output specs end-to-end: [list of 4-5 files from `$ARGUMENTS/output/specs/`]. For every identifier, name, path, or reference in each file, apply the reimplementor test: would someone with zero access to the source code understand this term? External contract files (database.md, api-*.md, cli-*.md, format-*.md, platform-*.md) document systems the app doesn't own — their contents are behavioral constraints, not contamination. Produce a structured verdict for each file: PASS or FAIL with specific findings. Write verdicts to `$ARGUMENTS/raw/audit/contamination-judge-batch-N.md`."
+- Model, effort, and dispatch record: as in Phase 3, with the role `contamination-judge` and `**Subagent:** greenfield:analyzer`.
+
+Build the verification report from the verdict files.
 
 ### Verification Criteria
 
@@ -138,6 +188,12 @@ RESULT: PASS (all files clean) | FAIL (N files need re-sanitization)
 ```
 
 **Any FAIL is a hard stop** — re-run the sanitizer worker on the affected files before proceeding.
+
+```bash
+greenfield-tiers floor "$ARGUMENTS" 5 || { echo "BLOCKED: model floor failed"; exit 1; }
+```
+
+If a dispatch record fails, dispatch the role again at the `lookup` values. Add `**Supersedes:** <failed record filename>` to the new record. If a session log fails, stop and ask the user. Never edit a record to clear a FAIL line.
 
 ## PHASE 6: Completeness Audit
 
