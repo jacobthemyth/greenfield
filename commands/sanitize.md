@@ -41,10 +41,13 @@ echo "Public artifacts: $(find $ARGUMENTS/public/ -name '*.md' -type f 2>/dev/nu
 
 ```bash
 greenfield-tiers preflight
-greenfield-tiers init "$ARGUMENTS"
 ```
 
 If `preflight` exits with status 3, stop and show its output to the user. Ask whether to end the run or to continue.
+
+```bash
+greenfield-tiers init "$ARGUMENTS"
+```
 
 ## PHASE 2: Public Source Pass-Through
 
