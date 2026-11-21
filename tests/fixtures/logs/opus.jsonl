@@ -1,0 +1,3 @@
+{"type":"user","message":{"role":"user","content":"\"model\":\"claude-haiku-5-5\""}}
+{"type":"assistant","message":{"model":"claude-opus-5-5","role":"assistant"}}
+{"type":"assistant","message":{"model":"claude-opus-5-5","role":"assistant"}}

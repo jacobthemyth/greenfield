@@ -130,5 +130,34 @@ ok "floor baseline"         [ "$RC" = 0 ] && ok "baseline text" has "SKIP L1-doc
 
 run floor "$ws" 8;          ok "floor bad layer"       [ "$RC" = 2 ]
 
+floor_log() {  # floor_log <log fixture or "null">: one at-floor record plus one agent_runs entry
+  ws=$(mkws); put "$ws" at-floor.md L1-chunk-analyzer.md; mkdir -p "$ws/provenance/sessions"
+  if [ "$1" = null ]; then log=null; else
+    cp "tests/fixtures/logs/$1" "$ws/provenance/sessions/$1"; log="\"provenance/sessions/$1\""; fi
+  printf '{"agent_runs":[{"role":"chunk-analyzer","dispatch_record":"provenance/dispatch/L1-chunk-analyzer.md","session_log":%s}]}\n' "$log" > "$ws/workspace.json"
+  run floor "$ws" 1
+}
+
+if command -v jq >/dev/null; then
+  floor_log opus.jsonl
+  ok "log at floor"         [ "$RC" = 0 ] && ok "log no warn" hasnt "WARN"
+  floor_log sonnet.jsonl
+  ok "log below floor"      [ "$RC" = 1 ] && ok "log below text" has "FAIL sonnet.jsonl: ran on claude-sonnet-5-5, below the floor opus for chunk-analyzer"
+  floor_log synthetic.jsonl             # Review Focus 4
+  ok "log synthetic"        [ "$RC" = 0 ] && ok "synthetic text" has "WARN synthetic.jsonl: model ID '<synthetic>' names no known alias"
+  floor_log null
+  ok "log null"             [ "$RC" = 0 ] && ok "log null text" has "WARN L1-chunk-analyzer.md: no session log"
+  ws=$(mkws); put "$ws" at-floor.md L1-chunk-analyzer.md; run floor "$ws" 1
+  ok "log no entry"         [ "$RC" = 0 ] && ok "no entry text" has "WARN L1-chunk-analyzer.md: no agent_runs entry"
+  ws=$(mkws); put "$ws" below-model.md L1-chunk-analyzer.md; put "$ws" supersedes-below.md L1-chunk-analyzer-2.md
+  mkdir -p "$ws/provenance/sessions"; cp tests/fixtures/logs/sonnet.jsonl "$ws/provenance/sessions/"
+  printf '{"agent_runs":[{"role":"chunk-analyzer","dispatch_record":"provenance/dispatch/L1-chunk-analyzer.md","session_log":"provenance/sessions/sonnet.jsonl"}]}\n' > "$ws/workspace.json"
+  run floor "$ws" 1;        ok "log superseded entry" [ "$RC" = 0 ]
+else
+  echo "SKIP: jq is not installed, session log tests not run"
+fi
+floor_log sonnet.jsonl; GREENFIELD_NO_JQ=1 run floor "$ws" 1
+ok "log without jq"         [ "$RC" = 0 ] && ok "without jq text" has "WARN L1: jq is not installed, session logs not compared"
+
 echo "test-tiers: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

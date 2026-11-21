@@ -274,6 +274,75 @@ floor_check_record() {
   return 0
 }
 
+have_jq() { [ -z "${GREENFIELD_NO_JQ:-}" ] && command -v jq >/dev/null 2>&1; }
+
+# Map a model ID to the alias named inside it. Return 1 if it names none.
+model_alias() {
+  case "$1" in
+    *fable*) echo fable ;;
+    *opus*) echo opus ;;
+    *sonnet*) echo sonnet ;;
+    *haiku*) echo haiku ;;
+    *) return 1 ;;
+  esac
+}
+
+# Compare the models in the session logs of one record with the role floor.
+# Print FAIL and WARN lines. Return 1 if any line is FAIL. Needs jq.
+# Args: <rows> <workspace> <record>
+floor_check_logs() {
+  local rows=$1 ws=$2 rec=$3
+  local name entries line erole elog tier pair fmodel fmr
+  local logfile lname id alias ar failed=0
+  name=$(basename "$rec")
+
+  if [ -f "$ws/workspace.json" ]; then
+    entries=$(jq -r --arg b "$name" '
+      .agent_runs[]?
+      | select(((.dispatch_record // "") | split("/") | last) == $b)
+      | "\(.role // "")|\(.session_log // "")"' "$ws/workspace.json" 2>/dev/null)
+  else
+    entries=""
+  fi
+  if [ -z "$entries" ]; then
+    echo "WARN $name: no agent_runs entry"
+    return 0
+  fi
+
+  while IFS= read -r line; do
+    erole=${line%%|*}
+    elog=${line#*|}
+    logfile="$ws/$elog"
+    if [ -z "$elog" ] || [ ! -f "$logfile" ]; then
+      echo "WARN $name: no session log"
+      continue
+    fi
+    lname=$(basename "$logfile")
+    if ! tier=$(role_tier "$rows" "$erole"); then
+      echo "WARN $name: agent_runs role '$erole' is not in the tier file"
+      continue
+    fi
+    pair=$(tier_pair "$rows" "$tier")
+    fmodel=${pair% *}
+    fmr=$(model_rank "$fmodel")
+    while IFS= read -r id; do
+      [ -n "$id" ] || continue
+      if ! alias=$(model_alias "$id"); then
+        echo "WARN $lname: model ID '$id' names no known alias"
+        continue
+      fi
+      ar=$(model_rank "$alias")
+      if [ "$ar" -lt "$fmr" ]; then
+        echo "FAIL $lname: ran on $id, below the floor $fmodel for $erole"
+        failed=1
+      fi
+    done < <(jq -r 'select(.type=="assistant") | .message.model // empty' "$logfile" 2>/dev/null | sort -u)
+  done <<EOF
+$entries
+EOF
+  return "$failed"
+}
+
 cmd_floor() {
   [ $# -eq 2 ] || die 2 "usage: greenfield-tiers floor <workspace> <layer>"
   local ws=$1 layer=$2
@@ -286,11 +355,22 @@ cmd_floor() {
   rows=$(load_tiers "$f") || exit $?
   local dir="$ws/provenance/dispatch"
   local baseline="$ws/provenance/model-tiers-baseline.txt"
-  local rec found=0 failed=0
+  local rec found=0 failed=0 out rc jq_warned=0
   for rec in "$dir"/L"$layer"-*.md; do
     [ -e "$rec" ] || continue
     found=1
-    floor_check_record "$rows" "$dir" "$baseline" "$rec" || failed=1
+    rc=0
+    out=$(floor_check_record "$rows" "$dir" "$baseline" "$rec") || rc=$?
+    printf '%s\n' "$out"
+    [ "$rc" -eq 0 ] || failed=1
+    case "$out" in SKIP*) continue ;; esac
+    if have_jq; then
+      out=$(floor_check_logs "$rows" "$ws" "$rec") || failed=1
+      [ -z "$out" ] || printf '%s\n' "$out"
+    elif [ "$jq_warned" -eq 0 ]; then
+      echo "WARN L$layer: jq is not installed, session logs not compared"
+      jq_warned=1
+    fi
   done
   if [ "$found" -eq 0 ]; then
     echo "FAIL L$layer: no dispatch records"
